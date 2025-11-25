@@ -17,7 +17,6 @@
 package com.xamera.ar.core.components.java.sharedcamera;
 
 import android.content.Context;
-import android.content.Intent;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
@@ -40,10 +39,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
 import android.util.Size;
-import android.view.MotionEvent;
 import android.view.Surface;
-import android.widget.CheckBox;
-import android.widget.CompoundButton;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -59,7 +55,6 @@ import com.google.ar.core.Frame;
 import com.google.ar.core.HitResult;
 import com.google.ar.core.Plane;
 import com.google.ar.core.Point;
-import com.google.ar.core.Point.OrientationMode;
 import com.google.ar.core.PointCloud;
 import com.google.ar.core.Session;
 import com.google.ar.core.SharedCamera;
@@ -77,6 +72,7 @@ import com.xamera.ar.core.components.java.common.rendering.PlaneRenderer;
 import com.xamera.ar.core.components.java.common.rendering.PointCloudRenderer;
 import com.google.ar.core.exceptions.CameraNotAvailableException;
 import com.google.ar.core.exceptions.UnavailableException;
+
 import android.view.WindowManager;
 
 import java.io.IOException;
@@ -134,7 +130,10 @@ public class SharedCameraActivity extends AppCompatActivity
   private final PlaneRenderer planeRenderer = new PlaneRenderer();
   private final PointCloudRenderer pointCloudRenderer = new PointCloudRenderer();
 
-  // Matrix for anchor poses (can be used later for cubes/arrows/text).
+  // Custom cube renderer.
+  private CubeRenderer cubeRenderer;
+
+  // Matrix for anchor poses.
   private final float[] anchorMatrix = new float[16];
   private static final float[] DEFAULT_COLOR = new float[] {0f, 0f, 0f, 0f};
 
@@ -150,7 +149,7 @@ public class SharedCameraActivity extends AppCompatActivity
   private boolean captureSessionChangesPossible = true;
   private final ConditionVariable safeToExitApp = new ConditionVariable();
 
-  // Matrices (kept for future 3D rendering of cubes/arrows/text).
+  // Matrices (you can reuse for future renderers if needed).
   private final float[] mModelMatrix = new float[16];
   private final float[] mMVPMatrix = new float[16];
 
@@ -544,10 +543,17 @@ public class SharedCameraActivity extends AppCompatActivity
   public void onSurfaceCreated(GL10 gl, EGLConfig config) {
     surfaceCreated = true;
     GLES20.glClearColor(0f, 0f, 0f, 1.0f);
+    GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+
     try {
       backgroundRenderer.createOnGlThread(this);
       planeRenderer.createOnGlThread(this, "models/trigrid.png");
       pointCloudRenderer.createOnGlThread(this);
+
+      // Initialize cube renderer.
+      cubeRenderer = new CubeRenderer();
+      cubeRenderer.createOnGlThread();
+
       openCamera();
     } catch (IOException e) {
       Log.e(TAG, "Failed to read an asset file", e);
@@ -636,10 +642,34 @@ public class SharedCameraActivity extends AppCompatActivity
       }
     }
 
-    // NOTE:
-    // At this point, anchors list is populated. In the future, you can iterate over `anchors`
-    // and use `anchor.getPose().toMatrix(anchorMatrix, 0)` to render cubes/arrows/text.
-    // For now, we only render the camera background (and any planes/point clouds you decide to add).
+    // Draw a rotating cube on each tracking anchor.
+    if (cubeRenderer != null) {
+      // Simple time-based rotation using frame timestamp (ns → rough degrees).
+      float angleY = (float) ((frame.getTimestamp() / 100_000_000L) % 360L); // ~ every 0.1s
+
+      for (ColoredAnchor coloredAnchor : anchors) {
+        if (coloredAnchor.anchor.getTrackingState() != TrackingState.TRACKING) {
+          continue;
+        }
+
+        // Anchor pose → anchorMatrix
+        coloredAnchor.anchor.getPose().toMatrix(anchorMatrix, 0);
+
+        // Lift cube slightly above plane.
+        Matrix.translateM(anchorMatrix, 0, 0f, 0.1f, 0f);
+
+        // Configure cube transform.
+        cubeRenderer.setScale(0.05f);          // Smaller cube.
+        cubeRenderer.setRotation(0f, angleY, 0f);
+        cubeRenderer.setPosition(0f, 0f, 0f);  // Already offset by anchor matrix.
+
+        cubeRenderer.draw(viewmtx, projmtx, anchorMatrix);
+      }
+    }
+
+    // (Optionally, you can also render planes / point clouds here.)
+    // planeRenderer.drawPlanes(...);
+    // pointCloudRenderer.update(...); pointCloudRenderer.draw(...);
   }
 
   // Utility to check ARCore support.
