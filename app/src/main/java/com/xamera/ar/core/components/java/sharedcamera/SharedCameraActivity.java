@@ -30,7 +30,6 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.TotalCaptureResult;
 import android.media.Image;
 import android.media.ImageReader;
-import android.net.Uri;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.opengl.Matrix;
@@ -80,9 +79,7 @@ import com.google.ar.core.exceptions.CameraNotAvailableException;
 import com.google.ar.core.exceptions.UnavailableException;
 import android.view.WindowManager;
 
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.EnumSet;
@@ -137,11 +134,11 @@ public class SharedCameraActivity extends AppCompatActivity
   private final PlaneRenderer planeRenderer = new PlaneRenderer();
   private final PointCloudRenderer pointCloudRenderer = new PointCloudRenderer();
 
-  // Matrix for anchor poses.
+  // Matrix for anchor poses (can be used later for cubes/arrows/text).
   private final float[] anchorMatrix = new float[16];
   private static final float[] DEFAULT_COLOR = new float[] {0f, 0f, 0f, 0f};
 
-  // Anchors created from taps.
+  // Anchors created from taps / auto placement.
   private final ArrayList<ColoredAnchor> anchors = new ArrayList<>();
 
   // For testing.
@@ -153,21 +150,9 @@ public class SharedCameraActivity extends AppCompatActivity
   private boolean captureSessionChangesPossible = true;
   private final ConditionVariable safeToExitApp = new ConditionVariable();
 
-  // The LetterRenderer for our 2D letter.
-  private LetterRenderer letterRenderer;
-  // The PathRenderer for our 3D path.
-  private PathRenderer pathRenderer;
-
-  // Matrices for computing the final MVP.
+  // Matrices (kept for future 3D rendering of cubes/arrows/text).
   private final float[] mModelMatrix = new float[16];
   private final float[] mMVPMatrix = new float[16];
-
-  // The obtained letter (set via AssignLetter).
-  private static String ObtainedLetter = "DENIZ";
-
-  // Flag for controlling the rendering mode.
-  // If true, 2D Letter Cube mode is active; if false, 3D Path mode is active.
-  private boolean show2DLetterBox = true;
 
   private boolean autoAnchorCreated = false;
 
@@ -289,32 +274,25 @@ public class SharedCameraActivity extends AppCompatActivity
     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     setContentView(R.layout.ar_activity);
 
-    // Check for the letter passed from MainActivity.
-    // If no extra is provided, default to "DENIZ".
-    String letter = getIntent().getStringExtra("LETTER_KEY");
-    if (letter == null || letter.isEmpty()) {
-      letter = "DENIZ";
-    }
-    AssignLetter(letter);
-
     // (Disable status window.)
     Bundle extraBundle = getIntent().getExtras();
     if (extraBundle != null && 1 == extraBundle.getShort(AUTOMATOR_KEY, AUTOMATOR_DEFAULT)) {
       automatorRun.set(true);
     }
+
     surfaceView = findViewById(R.id.glsurfaceview);
     surfaceView.setPreserveEGLContextOnPause(true);
     surfaceView.setEGLContextClientVersion(2);
     surfaceView.setEGLConfigChooser(8, 8, 8, 8, 16, 0);
     surfaceView.setRenderer(this);
     surfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
+
     displayRotationHelper = new DisplayRotationHelper(this);
     tapHelper = new TapHelper(this);
     surfaceView.setOnTouchListener(tapHelper);
-    imageTextLinearLayout = findViewById(R.id.image_text_layout);
-    // *************************************************************************
 
-    // (If you have an AR toggle switch in your layout, you can remove it.)
+    imageTextLinearLayout = findViewById(R.id.image_text_layout);
+
     messageSnackbarHelper.setMaxLines(4);
   }
 
@@ -345,7 +323,6 @@ public class SharedCameraActivity extends AppCompatActivity
     surfaceView.onResume();
     if (surfaceCreated) openCamera();
     displayRotationHelper.onResume();
-    // Optionally, you could also call performFileSearch() here if you prefer.
   }
 
   @Override
@@ -444,6 +421,7 @@ public class SharedCameraActivity extends AppCompatActivity
       return;
     }
     if (!isARCoreSupportedAndUpToDate()) return;
+
     if (sharedSession == null) {
       try {
         sharedSession = new Session(this, EnumSet.of(Session.Feature.SHARED_CAMERA));
@@ -459,25 +437,30 @@ public class SharedCameraActivity extends AppCompatActivity
       config.setFocusMode(Config.FocusMode.AUTO);
       sharedSession.configure(config);
     }
+
     sharedCamera = sharedSession.getSharedCamera();
     cameraId = sharedSession.getCameraConfig().getCameraId();
     Size desiredCpuImageSize = sharedSession.getCameraConfig().getImageSize();
+
     cpuImageReader = ImageReader.newInstance(desiredCpuImageSize.getWidth(),
             desiredCpuImageSize.getHeight(),
             ImageFormat.YUV_420_888, 2);
     cpuImageReader.setOnImageAvailableListener(this, backgroundHandler);
     sharedCamera.setAppSurfaces(this.cameraId, Arrays.asList(cpuImageReader.getSurface()));
+
     try {
       CameraDevice.StateCallback wrappedCallback =
               sharedCamera.createARDeviceStateCallback(cameraDeviceCallback, backgroundHandler);
       cameraManager = (CameraManager) this.getSystemService(Context.CAMERA_SERVICE);
       CameraCharacteristics characteristics = cameraManager.getCameraCharacteristics(this.cameraId);
+
       if (Build.VERSION.SDK_INT >= 28) {
         keysThatCanCauseCaptureDelaysWhenModified = characteristics.getAvailableSessionKeys();
         if (keysThatCanCauseCaptureDelaysWhenModified == null) {
           keysThatCanCauseCaptureDelaysWhenModified = new ArrayList<>();
         }
       }
+
       captureSessionChangesPossible = false;
       cameraManager.openCamera(cameraId, wrappedCallback, backgroundHandler);
     } catch (CameraAccessException | IllegalArgumentException | SecurityException e) {
@@ -529,7 +512,6 @@ public class SharedCameraActivity extends AppCompatActivity
 
   @Override
   public void onImageAvailable(ImageReader imageReader) {
-    // Status updates are disabled.
     Image image = imageReader.acquireLatestImage();
     if (image == null) {
       Log.w(TAG, "onImageAvailable: Skipping null image.");
@@ -567,23 +549,6 @@ public class SharedCameraActivity extends AppCompatActivity
       planeRenderer.createOnGlThread(this, "models/trigrid.png");
       pointCloudRenderer.createOnGlThread(this);
       openCamera();
-      // Initialize the 2D letter renderer with the obtained letter.
-      letterRenderer = new LetterRenderer(this, ObtainedLetter);
-      // Initialize the 3D path renderer.
-      pathRenderer = new PathRenderer();
-
-      // ***** MODIFIED: Load path coordinates from the Intent and switch to 3D Path mode *****
-      String pathCoordinates = getIntent().getStringExtra("PATH_COORDINATES");
-      if (pathCoordinates != null && !pathCoordinates.isEmpty()) {
-        InputStream in = new ByteArrayInputStream(pathCoordinates.getBytes("UTF-8"));
-        pathRenderer.loadFromStream(in);
-        in.close();
-        // Ensure we are in 3D Path mode.
-        show2DLetterBox = false;
-      }
-      // Optionally, uncomment the following line to fall back to file selection:
-      // performFileSearch();
-
     } catch (IOException e) {
       Log.e(TAG, "Failed to read an asset file", e);
     }
@@ -639,17 +604,16 @@ public class SharedCameraActivity extends AppCompatActivity
     Frame frame = sharedSession.update();
     Camera camera = frame.getCamera();
 
-    // --- Draw the AR background ---
-    // This draws the camera image as the background.
+    // Draw the AR background (camera image).
     backgroundRenderer.draw(frame);
 
-    // --- Obtain the projection and view matrices from the ARCore camera ---
+    // Obtain the projection and view matrices from the ARCore camera.
     float[] projmtx = new float[16];
     float[] viewmtx = new float[16];
     camera.getProjectionMatrix(projmtx, 0, 0.1f, 100.0f);
     camera.getViewMatrix(viewmtx, 0);
 
-    // --- Auto-create a letter box anchor if no anchor exists and the tracking state is good ---
+    // Auto-create an anchor at the center of the screen when tracking is good.
     if (!autoAnchorCreated && camera.getTrackingState() == TrackingState.TRACKING) {
       final int centerX = surfaceView.getWidth() / 2;
       final int centerY = surfaceView.getHeight() / 2;
@@ -672,28 +636,10 @@ public class SharedCameraActivity extends AppCompatActivity
       }
     }
 
-    // --- Render the letter cube anchors ---
-    for (ColoredAnchor coloredAnchor : anchors) {
-      if (coloredAnchor.anchor.getTrackingState() != TrackingState.TRACKING)
-        continue;
-      // Copy the anchor's pose matrix into anchorMatrix.
-      coloredAnchor.anchor.getPose().toMatrix(anchorMatrix, 0);
-      // Apply an upward offset to lift the letter slightly (adjust as necessary).
-      Matrix.translateM(anchorMatrix, 0, 0, 0.2f, 0);
-      // Apply scaling (adjust letterScale as needed).
-      float letterScale = 1.0f;
-      Matrix.scaleM(anchorMatrix, 0, letterScale, letterScale, letterScale);
-      // Compute the final Model-View-Projection matrix.
-      Matrix.multiplyMM(mMVPMatrix, 0, viewmtx, 0, anchorMatrix, 0);
-      Matrix.multiplyMM(mMVPMatrix, 0, projmtx, 0, mMVPMatrix, 0);
-      // Draw the letter cube.
-      letterRenderer.draw(mMVPMatrix);
-    }
-
-    // --- Render the 3D path ---
-    float[] mvpPathMatrix = new float[16];
-    Matrix.multiplyMM(mvpPathMatrix, 0, projmtx, 0, viewmtx, 0);
-    pathRenderer.draw(mvpPathMatrix);
+    // NOTE:
+    // At this point, anchors list is populated. In the future, you can iterate over `anchors`
+    // and use `anchor.getPose().toMatrix(anchorMatrix, 0)` to render cubes/arrows/text.
+    // For now, we only render the camera background (and any planes/point clouds you decide to add).
   }
 
   // Utility to check ARCore support.
@@ -732,34 +678,5 @@ public class SharedCameraActivity extends AppCompatActivity
         return false;
     }
     return true;
-  }
-
-  // Helper function to assign a letter (or word) to be drawn.
-  private static void AssignLetter(String targetLetter) {
-    ObtainedLetter = targetLetter;
-  }
-
-  private static final int READ_REQUEST_CODE = 42;
-
-  // Use the InputStream approach to load the file data.
-  @Override
-  protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-    super.onActivityResult(requestCode, resultCode, data);
-    if (requestCode == READ_REQUEST_CODE && resultCode == RESULT_OK) {
-      if (data != null) {
-        // Obtain the URI for the selected file.
-        Uri uri = data.getData();
-        try {
-          InputStream in = getContentResolver().openInputStream(uri);
-          if (in != null) {
-            // Load the points into the renderer using the stream.
-            pathRenderer.loadFromStream(in);
-            in.close();
-          }
-        } catch (IOException e) {
-          Log.e(TAG, "Error loading tracking data: " + e.getMessage());
-        }
-      }
-    }
   }
 }
