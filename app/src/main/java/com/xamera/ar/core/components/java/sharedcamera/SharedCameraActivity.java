@@ -2,7 +2,7 @@
  * Copyright 2018 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
+ * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
  *      http://www.apache.org/licenses/LICENSE-2.0
@@ -35,11 +35,13 @@ import android.opengl.Matrix;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.ConditionVariable;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
 import android.util.Size;
 import android.view.Surface;
+import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -61,6 +63,8 @@ import com.google.ar.core.SharedCamera;
 import com.google.ar.core.Trackable;
 import com.google.ar.core.TrackingState;
 import com.google.ar.core.examples.java.sharedcamera.R;
+import com.google.ar.core.exceptions.CameraNotAvailableException;
+import com.google.ar.core.exceptions.UnavailableException;
 import com.xamera.ar.core.components.java.common.helpers.CameraPermissionHelper;
 import com.xamera.ar.core.components.java.common.helpers.DisplayRotationHelper;
 import com.xamera.ar.core.components.java.common.helpers.FullScreenHelper;
@@ -70,11 +74,9 @@ import com.xamera.ar.core.components.java.common.helpers.TrackingStateHelper;
 import com.xamera.ar.core.components.java.common.rendering.BackgroundRenderer;
 import com.xamera.ar.core.components.java.common.rendering.PlaneRenderer;
 import com.xamera.ar.core.components.java.common.rendering.PointCloudRenderer;
-import com.google.ar.core.exceptions.CameraNotAvailableException;
-import com.google.ar.core.exceptions.UnavailableException;
 
-import android.view.WindowManager;
-
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -133,8 +135,15 @@ public class SharedCameraActivity extends AppCompatActivity
   // Custom cube renderer.
   private CubeRenderer cubeRenderer;
 
-  // Matrix for anchor poses.
+  // Arrow renderer to draw an arrow relative to cube.
+  private ArrowRenderer arrowRenderer;
+
+  // Tablet renderer: freeway-green sign (direction + distance).
+  private DirectionTabletRenderer tabletRenderer;
+
+  // Matrix for cube/arrow anchor pose.
   private final float[] anchorMatrix = new float[16];
+  private final float[] arrowMatrix = new float[16];
   private static final float[] DEFAULT_COLOR = new float[] {0f, 0f, 0f, 0f};
 
   // Anchors created from taps / auto placement.
@@ -154,6 +163,11 @@ public class SharedCameraActivity extends AppCompatActivity
   private final float[] mMVPMatrix = new float[16];
 
   private boolean autoAnchorCreated = false;
+
+  // Parsed orientation/distance from txt file (for cube + arrow + tablet).
+  private float currentOrientationAngleDeg = 0f; // 0° = north
+  private int currentDistanceMeters = 1;         // 1–4m
+  private String currentOrientationLabelStr = "North";
 
   // Helper class to associate an anchor with a color.
   private static class ColoredAnchor {
@@ -554,6 +568,18 @@ public class SharedCameraActivity extends AppCompatActivity
       cubeRenderer = new CubeRenderer();
       cubeRenderer.createOnGlThread();
 
+      // Initialize arrow renderer.
+      arrowRenderer = new ArrowRenderer();
+      arrowRenderer.createOnGlThread();
+      // Green arrow (178,222,39)
+      arrowRenderer.setColor(0.698f, 0.871f, 0.153f, 1f);
+
+      // Initialize tablet renderer (freeway-green sign).
+      tabletRenderer = new DirectionTabletRenderer();
+      tabletRenderer.createOnGlThread();
+      tabletRenderer.setPosition(0f, 0.22f, 0f);
+      tabletRenderer.setScale(0.18f);
+
       openCamera();
     } catch (IOException e) {
       Log.e(TAG, "Failed to read an asset file", e);
@@ -606,6 +632,14 @@ public class SharedCameraActivity extends AppCompatActivity
     if (!arcoreActive) return;
     if (errorCreatingSession) return;
 
+    // Update arrow orientation & distance from txt file.
+    refreshArrowFromFile();
+
+    // Also refresh the tablet texture (direction + distance text).
+    if (tabletRenderer != null) {
+      tabletRenderer.updateFromValues(currentDistanceMeters, currentOrientationLabelStr);
+    }
+
     // Update the ARCore session and retrieve the current frame.
     Frame frame = sharedSession.update();
     Camera camera = frame.getCamera();
@@ -618,6 +652,13 @@ public class SharedCameraActivity extends AppCompatActivity
     float[] viewmtx = new float[16];
     camera.getProjectionMatrix(projmtx, 0, 0.1f, 100.0f);
     camera.getViewMatrix(viewmtx, 0);
+
+    // Inverse view to get camera world position.
+    float[] invView = new float[16];
+    Matrix.invertM(invView, 0, viewmtx, 0);
+    float camX = invView[12];
+    float camY = invView[13];
+    float camZ = invView[14];
 
     // Auto-create an anchor at the center of the screen when tracking is good.
     if (!autoAnchorCreated && camera.getTrackingState() == TrackingState.TRACKING) {
@@ -642,34 +683,180 @@ public class SharedCameraActivity extends AppCompatActivity
       }
     }
 
-    // Draw a rotating cube on each tracking anchor.
+    // Draw:
+    //  - Tablet: fixed above anchor, always facing camera
+    //  - Cube + Arrow: position and rotation based on txt
     if (cubeRenderer != null) {
-      // Simple time-based rotation using frame timestamp (ns → rough degrees).
-      float angleY = (float) ((frame.getTimestamp() / 100_000_000L) % 360L); // ~ every 0.1s
+      // angle from TXT (north/east/...)
+      float angleY = currentOrientationAngleDeg;
+
+      // distance from TXT, scaled to world units
+      float distScale = 0.10f;        // tune as you like
+      float r = currentDistanceMeters * distScale;
+      double rad = Math.toRadians(currentOrientationAngleDeg);
+
+      // cube offset around the sign (local XZ)
+      float offsetX = (float) (r * Math.sin(rad));
+      float offsetZ = (float) (r * Math.cos(rad));
 
       for (ColoredAnchor coloredAnchor : anchors) {
         if (coloredAnchor.anchor.getTrackingState() != TrackingState.TRACKING) {
           continue;
         }
 
-        // Anchor pose → anchorMatrix
-        coloredAnchor.anchor.getPose().toMatrix(anchorMatrix, 0);
+        // ----- BASE ANCHOR WORLD MATRIX -----
+        float[] baseMatrix = new float[16];
+        coloredAnchor.anchor.getPose().toMatrix(baseMatrix, 0);
+        float anchorX = baseMatrix[12];
+        float anchorY = baseMatrix[13];
+        float anchorZ = baseMatrix[14];
 
-        // Lift cube slightly above plane.
-        Matrix.translateM(anchorMatrix, 0, 0f, 0.1f, 0f);
+        // ----- TABLET: FIXED, FACING CAMERA -----
+        if (tabletRenderer != null) {
+          float[] tabletMatrix = new float[16];
 
-        // Configure cube transform.
-        cubeRenderer.setScale(0.05f);          // Smaller cube.
-        cubeRenderer.setRotation(0f, angleY, 0f);
-        cubeRenderer.setPosition(0f, 0f, 0f);  // Already offset by anchor matrix.
+          // yaw so sign faces camera (billboard)
+          float dxCam = camX - anchorX;
+          float dzCam = camZ - anchorZ;
+          float yawToCam = (float) Math.toDegrees(Math.atan2(dxCam, dzCam));
 
+          Matrix.setIdentityM(tabletMatrix, 0);
+          Matrix.translateM(tabletMatrix, 0,
+                  anchorX, anchorY + 0.25f, anchorZ);  // fixed above cube/anchor
+          Matrix.rotateM(tabletMatrix, 0, yawToCam, 0f, 1f, 0f);
+
+          tabletRenderer.draw(viewmtx, projmtx, tabletMatrix);
+        }
+
+        // ----- CUBE: POSITION + ROTATION FROM TXT -----
+        System.arraycopy(baseMatrix, 0, anchorMatrix, 0, 16);
+        // move cube around sign according to distance/orientation
+        Matrix.translateM(anchorMatrix, 0,
+                offsetX, 0.10f, offsetZ);
+
+        cubeRenderer.setScale(0.05f);
+        cubeRenderer.setRotation(0f, angleY, 0f);   // rotation only from TXT
+        cubeRenderer.setPosition(0f, 0f, 0f);
         cubeRenderer.draw(viewmtx, projmtx, anchorMatrix);
+
+        // ----- ARROW ON TOP OF CUBE (same heading) -----
+        if (arrowRenderer != null) {
+          System.arraycopy(anchorMatrix, 0, arrowMatrix, 0, 16);
+          Matrix.translateM(arrowMatrix, 0, 0f, 0.07f, 0f);
+
+          arrowRenderer.setScale(0.05f);
+          arrowRenderer.setRotation(0f, angleY, 0f);  // same as cube
+          arrowRenderer.setPosition(0f, 0f, 0f);
+          arrowRenderer.draw(viewmtx, projmtx, arrowMatrix);
+        }
+      }
+    }
+  }
+
+  // Map orientation string to yaw angle (deg), like in ArMain.
+  private float orientationToAngle(String ori) {
+    if (ori == null) return 0f;
+    String o = ori.trim().toLowerCase();
+    switch (o) {
+      case "north":      return   0f;
+      case "northeast":  return  45f;
+      case "east":       return  90f;
+      case "southeast":  return 135f;
+      case "south":      return 180f;
+      case "southwest":  return 225f;
+      case "west":       return 270f;
+      case "northwest":  return 315f;
+      default:           return   0f;
+    }
+  }
+
+  /**
+   * Reads UStar_Cube_Prediction.txt and updates
+   * currentOrientationAngleDeg, currentDistanceMeters and currentOrientationLabelStr.
+   */
+  private void refreshArrowFromFile() {
+    File logFile = new File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+            "UStar_Cube_Prediction.txt"
+    );
+
+    String rawText;
+    try {
+      if (!logFile.exists()) {
+        rawText =
+                "UStar UIOD Tag Features\n" +
+                        "Prediction Date: N/A\n" +
+                        "OpenCV Initialization Status: false\n" +
+                        "Distance: 1M | Orientation: North";
+      } else {
+        FileInputStream fis = new FileInputStream(logFile);
+        java.io.BufferedReader br =
+                new java.io.BufferedReader(new java.io.InputStreamReader(fis));
+
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = br.readLine()) != null) {
+          sb.append(line).append('\n');
+        }
+        br.close();
+        fis.close();
+
+        String read = sb.toString().trim();
+        if (read.isEmpty()) {
+          rawText =
+                  "UStar UIOD Tag Features\n" +
+                          "Prediction Date: N/A\n" +
+                          "OpenCV Initialization Status: false\n" +
+                          "Distance: 1M | Orientation: North";
+        } else {
+          rawText = read;
+        }
+      }
+    } catch (Exception e) {
+      rawText =
+              "UStar UIOD Tag Features\n" +
+                      "Prediction Date: N/A\n" +
+                      "OpenCV Initialization Status: false\n" +
+                      "Distance: 1M | Orientation: North";
+    }
+
+    Integer distanceMeters = null;
+    String orientationLabel = "North";
+
+    for (String line : rawText.split("\n")) {
+      if (line.trim().toLowerCase().startsWith("distance:")) {
+        String[] parts = line.split("\\|");
+
+        // Distance part
+        if (parts.length > 0) {
+          java.util.regex.Matcher m = java.util.regex.Pattern
+                  .compile("Distance:\\s*(\\d+)\\s*[Mm]")
+                  .matcher(parts[0]);
+          if (m.find()) {
+            try {
+              distanceMeters = Integer.parseInt(m.group(1));
+            } catch (NumberFormatException ignored) {}
+          }
+        }
+
+        // Orientation part
+        if (parts.length > 1) {
+          java.util.regex.Matcher mOri = java.util.regex.Pattern
+                  .compile("Orientation:\\s*([A-Za-z]+)")
+                  .matcher(parts[1]);
+          if (mOri.find()) {
+            orientationLabel = mOri.group(1);
+          }
+        }
       }
     }
 
-    // (Optionally, you can also render planes / point clouds here.)
-    // planeRenderer.drawPlanes(...);
-    // pointCloudRenderer.update(...); pointCloudRenderer.draw(...);
+    if (distanceMeters == null) distanceMeters = 1;
+    distanceMeters = Math.max(1, Math.min(4, distanceMeters));
+
+    currentDistanceMeters = distanceMeters;
+    currentOrientationAngleDeg = orientationToAngle(orientationLabel);
+    currentOrientationLabelStr = orientationLabel;
   }
 
   // Utility to check ARCore support.
