@@ -16,6 +16,8 @@
 
 package com.xamera.ar.core.components.java.sharedcamera;
 
+import static android.hardware.camera2.CaptureRequest.CONTROL_EFFECT_MODE;
+
 import android.content.Context;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
@@ -144,7 +146,6 @@ public class SharedCameraActivity extends AppCompatActivity
   // Matrix for cube/arrow anchor pose.
   private final float[] anchorMatrix = new float[16];
   private final float[] arrowMatrix = new float[16];
-  private static final float[] DEFAULT_COLOR = new float[] {0f, 0f, 0f, 0f};
 
   // Anchors created from taps / auto placement.
   private final ArrayList<ColoredAnchor> anchors = new ArrayList<>();
@@ -492,11 +493,11 @@ public class SharedCameraActivity extends AppCompatActivity
   }
 
   private void setCameraEffects(CaptureRequest.Builder captureBuilder) {
-    if (checkIfKeyCanCauseDelay(CaptureRequest.CONTROL_EFFECT_MODE)) {
+    if (checkIfKeyCanCauseDelay(CONTROL_EFFECT_MODE)) {
       Log.w(TAG, "Not setting CONTROL_EFFECT_MODE since it can cause delays between transitions.");
     } else {
       Log.d(TAG, "Setting CONTROL_EFFECT_MODE to SEPIA in non-AR mode.");
-      captureBuilder.set(CaptureRequest.CONTROL_EFFECT_MODE,
+      captureBuilder.set(CONTROL_EFFECT_MODE,
               CaptureRequest.CONTROL_EFFECT_MODE_SEPIA);
     }
   }
@@ -571,8 +572,7 @@ public class SharedCameraActivity extends AppCompatActivity
       // Initialize arrow renderer.
       arrowRenderer = new ArrowRenderer();
       arrowRenderer.createOnGlThread();
-      // Green arrow (178,222,39)
-      arrowRenderer.setColor(0.698f, 0.871f, 0.153f, 1f);
+      arrowRenderer.setColor(0.698f, 0.871f, 0.153f, 1f);  // 178,222,39
 
       // Initialize tablet renderer (freeway-green sign).
       tabletRenderer = new DirectionTabletRenderer();
@@ -628,39 +628,34 @@ public class SharedCameraActivity extends AppCompatActivity
   }
 
   public void onDrawFrameARCore() throws CameraNotAvailableException {
-    // Return early if ARCore is not active or if session creation failed.
-    if (!arcoreActive) return;
-    if (errorCreatingSession) return;
+    if (!arcoreActive || errorCreatingSession) return;
 
-    // Update arrow orientation & distance from txt file.
+    // 1) Read txt and update distance/orientation fields.
     refreshArrowFromFile();
 
-    // Also refresh the tablet texture (direction + distance text).
+    // 2) Update the tablet's texture with the latest values.
     if (tabletRenderer != null) {
       tabletRenderer.updateFromValues(currentDistanceMeters, currentOrientationLabelStr);
     }
 
-    // Update the ARCore session and retrieve the current frame.
     Frame frame = sharedSession.update();
     Camera camera = frame.getCamera();
 
-    // Draw the AR background (camera image).
     backgroundRenderer.draw(frame);
 
-    // Obtain the projection and view matrices from the ARCore camera.
     float[] projmtx = new float[16];
     float[] viewmtx = new float[16];
     camera.getProjectionMatrix(projmtx, 0, 0.1f, 100.0f);
     camera.getViewMatrix(viewmtx, 0);
 
-    // Inverse view to get camera world position.
+    // Camera world position (for billboard sign).
     float[] invView = new float[16];
     Matrix.invertM(invView, 0, viewmtx, 0);
     float camX = invView[12];
     float camY = invView[13];
     float camZ = invView[14];
 
-    // Auto-create an anchor at the center of the screen when tracking is good.
+    // Create anchor at screen center (once).
     if (!autoAnchorCreated && camera.getTrackingState() == TrackingState.TRACKING) {
       final int centerX = surfaceView.getWidth() / 2;
       final int centerY = surfaceView.getHeight() / 2;
@@ -671,7 +666,8 @@ public class SharedCameraActivity extends AppCompatActivity
                 && (PlaneRenderer.calculateDistanceToPlane(hit.getHitPose(), camera.getPose()) > 0))
                 ||
                 ((trackable instanceof Point)
-                        && ((Point) trackable).getOrientationMode() == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)) {
+                        && ((Point) trackable).getOrientationMode()
+                        == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)) {
           if (anchors.size() >= 20) {
             anchors.get(0).anchor.detach();
             anchors.remove(0);
@@ -683,19 +679,13 @@ public class SharedCameraActivity extends AppCompatActivity
       }
     }
 
-    // Draw:
-    //  - Tablet: fixed above anchor, always facing camera
-    //  - Cube + Arrow: position and rotation based on txt
     if (cubeRenderer != null) {
-      // angle from TXT (north/east/...)
       float angleY = currentOrientationAngleDeg;
 
-      // distance from TXT, scaled to world units
-      float distScale = 0.10f;        // tune as you like
+      float distScale = 0.10f;
       float r = currentDistanceMeters * distScale;
       double rad = Math.toRadians(currentOrientationAngleDeg);
 
-      // cube offset around the sign (local XZ)
       float offsetX = (float) (r * Math.sin(rad));
       float offsetZ = (float) (r * Math.cos(rad));
 
@@ -704,48 +694,43 @@ public class SharedCameraActivity extends AppCompatActivity
           continue;
         }
 
-        // ----- BASE ANCHOR WORLD MATRIX -----
         float[] baseMatrix = new float[16];
         coloredAnchor.anchor.getPose().toMatrix(baseMatrix, 0);
         float anchorX = baseMatrix[12];
         float anchorY = baseMatrix[13];
         float anchorZ = baseMatrix[14];
 
-        // ----- TABLET: FIXED, FACING CAMERA -----
+        // ----- TABLET: fixed above anchor, facing camera -----
         if (tabletRenderer != null) {
           float[] tabletMatrix = new float[16];
 
-          // yaw so sign faces camera (billboard)
           float dxCam = camX - anchorX;
           float dzCam = camZ - anchorZ;
           float yawToCam = (float) Math.toDegrees(Math.atan2(dxCam, dzCam));
 
           Matrix.setIdentityM(tabletMatrix, 0);
-          Matrix.translateM(tabletMatrix, 0,
-                  anchorX, anchorY + 0.25f, anchorZ);  // fixed above cube/anchor
+          Matrix.translateM(tabletMatrix, 0, anchorX, anchorY + 0.25f, anchorZ);
           Matrix.rotateM(tabletMatrix, 0, yawToCam, 0f, 1f, 0f);
 
           tabletRenderer.draw(viewmtx, projmtx, tabletMatrix);
         }
 
-        // ----- CUBE: POSITION + ROTATION FROM TXT -----
+        // ----- CUBE: position + rotation from txt -----
         System.arraycopy(baseMatrix, 0, anchorMatrix, 0, 16);
-        // move cube around sign according to distance/orientation
-        Matrix.translateM(anchorMatrix, 0,
-                offsetX, 0.10f, offsetZ);
+        Matrix.translateM(anchorMatrix, 0, offsetX, 0.10f, offsetZ);
 
         cubeRenderer.setScale(0.05f);
-        cubeRenderer.setRotation(0f, angleY, 0f);   // rotation only from TXT
+        cubeRenderer.setRotation(0f, angleY, 0f);
         cubeRenderer.setPosition(0f, 0f, 0f);
         cubeRenderer.draw(viewmtx, projmtx, anchorMatrix);
 
-        // ----- ARROW ON TOP OF CUBE (same heading) -----
+        // ----- ARROW on top of cube -----
         if (arrowRenderer != null) {
           System.arraycopy(anchorMatrix, 0, arrowMatrix, 0, 16);
           Matrix.translateM(arrowMatrix, 0, 0f, 0.07f, 0f);
 
           arrowRenderer.setScale(0.05f);
-          arrowRenderer.setRotation(0f, angleY, 0f);  // same as cube
+          arrowRenderer.setRotation(0f, angleY, 0f);
           arrowRenderer.setPosition(0f, 0f, 0f);
           arrowRenderer.draw(viewmtx, projmtx, arrowMatrix);
         }
@@ -753,7 +738,6 @@ public class SharedCameraActivity extends AppCompatActivity
     }
   }
 
-  // Map orientation string to yaw angle (deg), like in ArMain.
   private float orientationToAngle(String ori) {
     if (ori == null) return 0f;
     String o = ori.trim().toLowerCase();
@@ -772,7 +756,7 @@ public class SharedCameraActivity extends AppCompatActivity
 
   /**
    * Reads UStar_Cube_Prediction.txt and updates
-   * currentOrientationAngleDeg, currentDistanceMeters and currentOrientationLabelStr.
+   * currentOrientationAngleDeg, currentDistanceMeters, currentOrientationLabelStr.
    */
   private void refreshArrowFromFile() {
     File logFile = new File(
@@ -827,7 +811,6 @@ public class SharedCameraActivity extends AppCompatActivity
       if (line.trim().toLowerCase().startsWith("distance:")) {
         String[] parts = line.split("\\|");
 
-        // Distance part
         if (parts.length > 0) {
           java.util.regex.Matcher m = java.util.regex.Pattern
                   .compile("Distance:\\s*(\\d+)\\s*[Mm]")
@@ -839,7 +822,6 @@ public class SharedCameraActivity extends AppCompatActivity
           }
         }
 
-        // Orientation part
         if (parts.length > 1) {
           java.util.regex.Matcher mOri = java.util.regex.Pattern
                   .compile("Orientation:\\s*([A-Za-z]+)")
@@ -859,7 +841,6 @@ public class SharedCameraActivity extends AppCompatActivity
     currentOrientationLabelStr = orientationLabel;
   }
 
-  // Utility to check ARCore support.
   private boolean isARCoreSupportedAndUpToDate() {
     ArCoreApk.Availability availability = ArCoreApk.getInstance().checkAvailability(this);
     switch (availability) {
@@ -869,13 +850,10 @@ public class SharedCameraActivity extends AppCompatActivity
       case SUPPORTED_NOT_INSTALLED:
         try {
           ArCoreApk.InstallStatus installStatus =
-                  ArCoreApk.getInstance().requestInstall(this, /*userRequestedInstall=*/ true);
-          switch (installStatus) {
-            case INSTALL_REQUESTED:
-              Log.e(TAG, "ARCore installation requested.");
-              return false;
-            case INSTALLED:
-              break;
+                  ArCoreApk.getInstance().requestInstall(this, true);
+          if (installStatus == ArCoreApk.InstallStatus.INSTALL_REQUESTED) {
+            Log.e(TAG, "ARCore installation requested.");
+            return false;
           }
         } catch (UnavailableException e) {
           Log.e(TAG, "ARCore not installed", e);
@@ -889,9 +867,9 @@ public class SharedCameraActivity extends AppCompatActivity
       case UNKNOWN_CHECKING:
       case UNKNOWN_TIMED_OUT:
       case UNSUPPORTED_DEVICE_NOT_CAPABLE:
-        Log.e(TAG, "ARCore is not supported on this device, ArCoreApk.checkAvailability() returned " + availability);
+        Log.e(TAG, "ARCore not supported: " + availability);
         runOnUiThread(() ->
-                Toast.makeText(getApplicationContext(), "ARCore is not supported on this device, ArCoreApk.checkAvailability() returned " + availability, Toast.LENGTH_LONG).show());
+                Toast.makeText(getApplicationContext(), "ARCore not supported: " + availability, Toast.LENGTH_LONG).show());
         return false;
     }
     return true;
