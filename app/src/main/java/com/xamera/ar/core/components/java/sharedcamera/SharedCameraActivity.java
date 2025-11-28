@@ -1,24 +1,10 @@
-/*
- * Copyright 2018 Google LLC
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * You may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package com.xamera.ar.core.components.java.sharedcamera;
 
 import static android.hardware.camera2.CaptureRequest.CONTROL_EFFECT_MODE;
 
 import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
@@ -31,13 +17,13 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.TotalCaptureResult;
 import android.media.Image;
 import android.media.ImageReader;
+import android.net.Uri;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.opengl.Matrix;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.ConditionVariable;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Log;
@@ -77,8 +63,6 @@ import com.xamera.ar.core.components.java.common.rendering.BackgroundRenderer;
 import com.xamera.ar.core.components.java.common.rendering.PlaneRenderer;
 import com.xamera.ar.core.components.java.common.rendering.PointCloudRenderer;
 
-import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -95,6 +79,11 @@ public class SharedCameraActivity extends AppCompatActivity
         SurfaceTexture.OnFrameAvailableListener {
 
   private static final String TAG = SharedCameraActivity.class.getSimpleName();
+
+  // Keys for SAF + SharedPreferences
+  private static final int REQ_PICK_PREDICTION_FILE = 1001;
+  private static final String PREFS_NAME = "ustar_prefs";
+  private static final String PREF_KEY_PREDICTION_URI = "prediction_uri";
 
   // AR runs automatically.
   private boolean arMode = true;
@@ -134,43 +123,38 @@ public class SharedCameraActivity extends AppCompatActivity
   private final PlaneRenderer planeRenderer = new PlaneRenderer();
   private final PointCloudRenderer pointCloudRenderer = new PointCloudRenderer();
 
-  // Custom cube renderer.
+  // Scene renderers.
   private CubeRenderer cubeRenderer;
-
-  // Arrow renderer to draw an arrow relative to cube.
   private ArrowRenderer arrowRenderer;
-
-  // Tablet renderer: freeway-green sign (direction + distance).
   private DirectionTabletRenderer tabletRenderer;
 
-  // Matrix for cube/arrow anchor pose.
+  // Matrices for cube/arrow.
   private final float[] anchorMatrix = new float[16];
   private final float[] arrowMatrix = new float[16];
 
   // Anchors created from taps / auto placement.
   private final ArrayList<ColoredAnchor> anchors = new ArrayList<>();
 
-  // For testing.
   private static final Short AUTOMATOR_DEFAULT = 0;
   private static final String AUTOMATOR_KEY = "automator";
   private final AtomicBoolean automatorRun = new AtomicBoolean(false);
 
-  // Synchronization.
   private boolean captureSessionChangesPossible = true;
   private final ConditionVariable safeToExitApp = new ConditionVariable();
 
-  // Matrices (you can reuse for future renderers if needed).
   private final float[] mModelMatrix = new float[16];
   private final float[] mMVPMatrix = new float[16];
 
   private boolean autoAnchorCreated = false;
 
-  // Parsed orientation/distance from txt file (for cube + arrow + tablet).
-  private float currentOrientationAngleDeg = 0f; // 0° = north
-  private int currentDistanceMeters = 1;         // 1–4m
+  // Cached latest prediction.
+  private float currentOrientationAngleDeg = 0f;
+  private int currentDistanceMeters = 1;
   private String currentOrientationLabelStr = "North";
 
-  // Helper class to associate an anchor with a color.
+  // SAF Uri for prediction file.
+  private Uri predictionFileUri;
+
   private static class ColoredAnchor {
     public final Anchor anchor;
     public final float[] color;
@@ -189,18 +173,21 @@ public class SharedCameraActivity extends AppCompatActivity
               SharedCameraActivity.this.cameraDevice = cameraDevice;
               createCameraPreviewSession();
             }
+
             @Override
             public void onClosed(@NonNull CameraDevice cameraDevice) {
               Log.d(TAG, "Camera device ID " + cameraDevice.getId() + " closed.");
               SharedCameraActivity.this.cameraDevice = null;
               safeToExitApp.open();
             }
+
             @Override
             public void onDisconnected(@NonNull CameraDevice cameraDevice) {
               Log.w(TAG, "Camera device ID " + cameraDevice.getId() + " disconnected.");
               cameraDevice.close();
               SharedCameraActivity.this.cameraDevice = null;
             }
+
             @Override
             public void onError(@NonNull CameraDevice cameraDevice, int error) {
               Log.e(TAG, "Camera device ID " + cameraDevice.getId() + " error " + error);
@@ -284,14 +271,17 @@ public class SharedCameraActivity extends AppCompatActivity
     super.onCreate(savedInstanceState);
     setContentView(R.layout.ar_activity);
 
-    // Disable sleeping while this activity is visible.
     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     setContentView(R.layout.ar_activity);
 
-    // (Disable status window.)
     Bundle extraBundle = getIntent().getExtras();
     if (extraBundle != null && 1 == extraBundle.getShort(AUTOMATOR_KEY, AUTOMATOR_DEFAULT)) {
       automatorRun.set(true);
+    }
+
+    loadSavedPredictionUri();
+    if (predictionFileUri == null) {
+      requestPredictionFileViaSaf();
     }
 
     surfaceView = findViewById(R.id.glsurfaceview);
@@ -306,8 +296,67 @@ public class SharedCameraActivity extends AppCompatActivity
     surfaceView.setOnTouchListener(tapHelper);
 
     imageTextLinearLayout = findViewById(R.id.image_text_layout);
-
     messageSnackbarHelper.setMaxLines(4);
+  }
+
+  private void loadSavedPredictionUri() {
+    SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+    String uriStr = prefs.getString(PREF_KEY_PREDICTION_URI, null);
+    if (uriStr != null) {
+      try {
+        predictionFileUri = Uri.parse(uriStr);
+        Log.d(TAG, "Loaded saved prediction URI: " + predictionFileUri);
+      } catch (Exception e) {
+        Log.e(TAG, "Failed to parse saved prediction URI", e);
+        predictionFileUri = null;
+      }
+    }
+  }
+
+  private void requestPredictionFileViaSaf() {
+    Toast.makeText(
+            this,
+            "Please select UStar_Cube_Prediction.txt from Documents.",
+            Toast.LENGTH_LONG
+    ).show();
+
+    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+    intent.addCategory(Intent.CATEGORY_OPENABLE);
+    intent.setType("text/*");
+    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+    startActivityForResult(intent, REQ_PICK_PREDICTION_FILE);
+  }
+
+  @Override
+  protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+    super.onActivityResult(requestCode, resultCode, data);
+
+    if (requestCode == REQ_PICK_PREDICTION_FILE) {
+      if (resultCode == RESULT_OK && data != null) {
+        Uri uri = data.getData();
+        if (uri != null) {
+          final int flags = data.getFlags()
+                  & (Intent.FLAG_GRANT_READ_URI_PERMISSION
+                  | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+          try {
+            getContentResolver().takePersistableUriPermission(uri, flags);
+          } catch (Exception e) {
+            Log.e(TAG, "takePersistableUriPermission failed", e);
+          }
+
+          predictionFileUri = uri;
+
+          SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+          prefs.edit().putString(PREF_KEY_PREDICTION_URI, uri.toString()).apply();
+
+          Log.d(TAG, "Prediction file chosen and saved: " + predictionFileUri);
+        }
+      } else {
+        Log.w(TAG, "User did not pick a prediction file; using default prediction.");
+      }
+    }
   }
 
   @Override
@@ -351,7 +400,6 @@ public class SharedCameraActivity extends AppCompatActivity
     super.onPause();
   }
 
-  // ----- Camera and ARCore Methods -----
   private void resumeCamera2() {
     setRepeatingCaptureRequest();
     sharedCamera.getSurfaceTexture().setOnFrameAvailableListener(this);
@@ -367,7 +415,6 @@ public class SharedCameraActivity extends AppCompatActivity
         sharedCamera.setCaptureCallback(cameraCaptureCallback, backgroundHandler);
       } catch (CameraNotAvailableException e) {
         Log.e(TAG, "Failed to resume ARCore session", e);
-        return;
       }
     }
   }
@@ -565,20 +612,17 @@ public class SharedCameraActivity extends AppCompatActivity
       planeRenderer.createOnGlThread(this, "models/trigrid.png");
       pointCloudRenderer.createOnGlThread(this);
 
-      // Initialize cube renderer.
       cubeRenderer = new CubeRenderer();
       cubeRenderer.createOnGlThread();
 
-      // Initialize arrow renderer.
       arrowRenderer = new ArrowRenderer();
       arrowRenderer.createOnGlThread();
       arrowRenderer.setColor(0.698f, 0.871f, 0.153f, 1f);  // 178,222,39
 
-      // Initialize tablet renderer (freeway-green sign).
       tabletRenderer = new DirectionTabletRenderer();
       tabletRenderer.createOnGlThread();
-      tabletRenderer.setPosition(0f, 0.22f, 0f);
-      tabletRenderer.setScale(0.18f);
+      tabletRenderer.setPosition(0f, 0.30f, 0f); // higher
+      tabletRenderer.setScale(0.30f);           // larger tablet
 
       openCamera();
     } catch (IOException e) {
@@ -630,10 +674,19 @@ public class SharedCameraActivity extends AppCompatActivity
   public void onDrawFrameARCore() throws CameraNotAvailableException {
     if (!arcoreActive || errorCreatingSession) return;
 
-    // 1) Read txt and update distance/orientation fields.
-    refreshArrowFromFile();
+    // ---- 1) Read prediction from helper (using SAF Uri) ----
+    UStarPrediction prediction;
+    if (predictionFileUri != null) {
+      prediction = UStarPredictionReader.readFromUri(this, predictionFileUri);
+    } else {
+      prediction = new UStarPrediction(1, "North", 0f);
+    }
 
-    // 2) Update the tablet's texture with the latest values.
+    currentDistanceMeters = prediction.distanceMeters;
+    currentOrientationAngleDeg = prediction.orientationAngleDeg; // 0=N, 45=NE, ...
+    currentOrientationLabelStr = prediction.orientationLabel;
+
+    // ---- 2) Update tablet text from prediction ----
     if (tabletRenderer != null) {
       tabletRenderer.updateFromValues(currentDistanceMeters, currentOrientationLabelStr);
     }
@@ -648,14 +701,13 @@ public class SharedCameraActivity extends AppCompatActivity
     camera.getProjectionMatrix(projmtx, 0, 0.1f, 100.0f);
     camera.getViewMatrix(viewmtx, 0);
 
-    // Camera world position (for billboard sign).
     float[] invView = new float[16];
     Matrix.invertM(invView, 0, viewmtx, 0);
     float camX = invView[12];
     float camY = invView[13];
     float camZ = invView[14];
 
-    // Create anchor at screen center (once).
+    // Anchor creation (center of screen).
     if (!autoAnchorCreated && camera.getTrackingState() == TrackingState.TRACKING) {
       final int centerX = surfaceView.getWidth() / 2;
       final int centerY = surfaceView.getHeight() / 2;
@@ -668,6 +720,7 @@ public class SharedCameraActivity extends AppCompatActivity
                 ((trackable instanceof Point)
                         && ((Point) trackable).getOrientationMode()
                         == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)) {
+
           if (anchors.size() >= 20) {
             anchors.get(0).anchor.detach();
             anchors.remove(0);
@@ -680,11 +733,11 @@ public class SharedCameraActivity extends AppCompatActivity
     }
 
     if (cubeRenderer != null) {
-      float angleY = currentOrientationAngleDeg;
+      float angleY = currentOrientationAngleDeg;  // still used for distance offset
 
-      float distScale = 0.10f;
+      float distScale = 0.25f;
       float r = currentDistanceMeters * distScale;
-      double rad = Math.toRadians(currentOrientationAngleDeg);
+      double rad = Math.toRadians(angleY);
 
       float offsetX = (float) (r * Math.sin(rad));
       float offsetZ = (float) (r * Math.cos(rad));
@@ -700,145 +753,50 @@ public class SharedCameraActivity extends AppCompatActivity
         float anchorY = baseMatrix[13];
         float anchorZ = baseMatrix[14];
 
-        // ----- TABLET: fixed above anchor, facing camera -----
+        // cube position from distance + orientation
+        float cubeX = anchorX + offsetX;
+        float cubeY = anchorY + 0.30f;
+        float cubeZ = anchorZ + offsetZ;
+
+        // ----- TABLET: above cube, facing camera -----
         if (tabletRenderer != null) {
           float[] tabletMatrix = new float[16];
 
-          float dxCam = camX - anchorX;
-          float dzCam = camZ - anchorZ;
+          float dxCam = camX - cubeX;
+          float dzCam = camZ - cubeZ;
           float yawToCam = (float) Math.toDegrees(Math.atan2(dxCam, dzCam));
 
           Matrix.setIdentityM(tabletMatrix, 0);
-          Matrix.translateM(tabletMatrix, 0, anchorX, anchorY + 0.25f, anchorZ);
+          Matrix.translateM(tabletMatrix, 0, cubeX, cubeY + 0.30f, cubeZ);
           Matrix.rotateM(tabletMatrix, 0, yawToCam, 0f, 1f, 0f);
 
           tabletRenderer.draw(viewmtx, projmtx, tabletMatrix);
         }
 
-        // ----- CUBE: position + rotation from txt -----
-        System.arraycopy(baseMatrix, 0, anchorMatrix, 0, 16);
-        Matrix.translateM(anchorMatrix, 0, offsetX, 0.10f, offsetZ);
+        // ----- CUBE: fixed orientation -----
+        Matrix.setIdentityM(anchorMatrix, 0);
+        Matrix.translateM(anchorMatrix, 0, cubeX, cubeY, cubeZ);
 
-        cubeRenderer.setScale(0.05f);
-        cubeRenderer.setRotation(0f, angleY, 0f);
+        cubeRenderer.setScale(0.20f);
+        cubeRenderer.setRotation(0f, 0f, 0f);
         cubeRenderer.setPosition(0f, 0f, 0f);
         cubeRenderer.draw(viewmtx, projmtx, anchorMatrix);
 
-        // ----- ARROW on top of cube -----
+        // ----- ARROW: above cube, NESW rotation in screen plane -----
         if (arrowRenderer != null) {
-          System.arraycopy(anchorMatrix, 0, arrowMatrix, 0, 16);
-          Matrix.translateM(arrowMatrix, 0, 0f, 0.07f, 0f);
+          Matrix.setIdentityM(arrowMatrix, 0);
+          Matrix.translateM(arrowMatrix, 0, cubeX, cubeY + 0.24f, cubeZ);
 
-          arrowRenderer.setScale(0.05f);
-          arrowRenderer.setRotation(0f, angleY, 0f);
+          // Rotate around Z so arrow tip spins like a compass on screen
+          float arrowRotZ = -currentOrientationAngleDeg; // N=0, E=-90, NE=-45, etc.
+
+          arrowRenderer.setScale(0.20f);
+          arrowRenderer.setRotation(0f, 0f, arrowRotZ);
           arrowRenderer.setPosition(0f, 0f, 0f);
           arrowRenderer.draw(viewmtx, projmtx, arrowMatrix);
         }
       }
     }
-  }
-
-  private float orientationToAngle(String ori) {
-    if (ori == null) return 0f;
-    String o = ori.trim().toLowerCase();
-    switch (o) {
-      case "north":      return   0f;
-      case "northeast":  return  45f;
-      case "east":       return  90f;
-      case "southeast":  return 135f;
-      case "south":      return 180f;
-      case "southwest":  return 225f;
-      case "west":       return 270f;
-      case "northwest":  return 315f;
-      default:           return   0f;
-    }
-  }
-
-  /**
-   * Reads UStar_Cube_Prediction.txt and updates
-   * currentOrientationAngleDeg, currentDistanceMeters, currentOrientationLabelStr.
-   */
-  private void refreshArrowFromFile() {
-    File logFile = new File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-            "UStar_Cube_Prediction.txt"
-    );
-
-    String rawText;
-    try {
-      if (!logFile.exists()) {
-        rawText =
-                "UStar UIOD Tag Features\n" +
-                        "Prediction Date: N/A\n" +
-                        "OpenCV Initialization Status: false\n" +
-                        "Distance: 1M | Orientation: North";
-      } else {
-        FileInputStream fis = new FileInputStream(logFile);
-        java.io.BufferedReader br =
-                new java.io.BufferedReader(new java.io.InputStreamReader(fis));
-
-        StringBuilder sb = new StringBuilder();
-        String line;
-        while ((line = br.readLine()) != null) {
-          sb.append(line).append('\n');
-        }
-        br.close();
-        fis.close();
-
-        String read = sb.toString().trim();
-        if (read.isEmpty()) {
-          rawText =
-                  "UStar UIOD Tag Features\n" +
-                          "Prediction Date: N/A\n" +
-                          "OpenCV Initialization Status: false\n" +
-                          "Distance: 1M | Orientation: North";
-        } else {
-          rawText = read;
-        }
-      }
-    } catch (Exception e) {
-      rawText =
-              "UStar UIOD Tag Features\n" +
-                      "Prediction Date: N/A\n" +
-                      "OpenCV Initialization Status: false\n" +
-                      "Distance: 1M | Orientation: North";
-    }
-
-    Integer distanceMeters = null;
-    String orientationLabel = "North";
-
-    for (String line : rawText.split("\n")) {
-      if (line.trim().toLowerCase().startsWith("distance:")) {
-        String[] parts = line.split("\\|");
-
-        if (parts.length > 0) {
-          java.util.regex.Matcher m = java.util.regex.Pattern
-                  .compile("Distance:\\s*(\\d+)\\s*[Mm]")
-                  .matcher(parts[0]);
-          if (m.find()) {
-            try {
-              distanceMeters = Integer.parseInt(m.group(1));
-            } catch (NumberFormatException ignored) {}
-          }
-        }
-
-        if (parts.length > 1) {
-          java.util.regex.Matcher mOri = java.util.regex.Pattern
-                  .compile("Orientation:\\s*([A-Za-z]+)")
-                  .matcher(parts[1]);
-          if (mOri.find()) {
-            orientationLabel = mOri.group(1);
-          }
-        }
-      }
-    }
-
-    if (distanceMeters == null) distanceMeters = 1;
-    distanceMeters = Math.max(1, Math.min(4, distanceMeters));
-
-    currentDistanceMeters = distanceMeters;
-    currentOrientationAngleDeg = orientationToAngle(orientationLabel);
-    currentOrientationLabelStr = orientationLabel;
   }
 
   private boolean isARCoreSupportedAndUpToDate() {
@@ -862,7 +820,6 @@ public class SharedCameraActivity extends AppCompatActivity
           finish();
           return false;
         }
-        break;
       case UNKNOWN_ERROR:
       case UNKNOWN_CHECKING:
       case UNKNOWN_TIMED_OUT:

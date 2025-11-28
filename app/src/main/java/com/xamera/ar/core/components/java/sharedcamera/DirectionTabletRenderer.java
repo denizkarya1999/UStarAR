@@ -173,7 +173,7 @@ public class DirectionTabletRenderer {
         // White text on freeway green
         Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         textPaint.setColor(Color.WHITE);
-        textPaint.setTextSize(72f);
+        textPaint.setTextSize(64f);
         textPaint.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
         textPaint.setTextAlign(Paint.Align.LEFT);
 
