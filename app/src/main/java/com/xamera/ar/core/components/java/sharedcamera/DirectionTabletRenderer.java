@@ -22,6 +22,7 @@ import java.nio.FloatBuffer;
  * via updateFromValues(distance, orientation).
  *
  * The panel is a textured quad drawn in 3D; texture contains:
+ *  - "Current Direction Info" (title)
  *  - ORIENTATION: <label>
  *  - DISTANCE: <Xm>
  *
@@ -52,7 +53,7 @@ public class DirectionTabletRenderer {
     private final float[] finalMvp = new float[16];
 
     // Panel transform (relative to anchor)
-    private float posX = 0f, posY = 0.25f, posZ = 0f;  // float above cube
+    private float posX = 0f, posY = 0.25f, posZ = 0f;  // float above cube (or anchor)
     private float rotX = 0f, rotY = 0f, rotZ = 0f;
     private float scale = 0.15f; // overall size
 
@@ -157,7 +158,7 @@ public class DirectionTabletRenderer {
         panelBmp.recycle();
     }
 
-    /** Build a 1024x512 bitmap with text only (no arrow), on a freeway green tablet. */
+    /** Build a 1024x512 bitmap with a title + text, on a freeway green tablet. */
     private Bitmap buildPanelBitmap(int distanceMeters, String orientationLabel) {
         Bitmap bmp = Bitmap.createBitmap(1024, 512, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bmp);
@@ -170,7 +171,19 @@ public class DirectionTabletRenderer {
         bgPaint.setColor(Color.rgb(0, 106, 78));  // deep green freeway color
         canvas.drawRoundRect(40f, 40f, 984f, 472f, 30f, 30f, bgPaint);
 
-        // White text on freeway green
+        // --- Title: "Current Direction Info" at top ---
+        Paint titlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        titlePaint.setColor(Color.WHITE);
+        titlePaint.setTextSize(72f);
+        titlePaint.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
+        titlePaint.setTextAlign(Paint.Align.CENTER);
+
+        float centerX = bmp.getWidth() / 2f;
+        float titleY = 130f; // vertical position for title
+
+        canvas.drawText("Current Direction Info", centerX, titleY, titlePaint);
+
+        // --- Body text (orientation + distance), left aligned ---
         Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         textPaint.setColor(Color.WHITE);
         textPaint.setTextSize(64f);
@@ -178,7 +191,7 @@ public class DirectionTabletRenderer {
         textPaint.setTextAlign(Paint.Align.LEFT);
 
         float leftTextX = 80f;
-        float baseY = 180f;
+        float baseY = 220f;  // push a bit lower to sit under title
 
         canvas.drawText(
                 "ORIENTATION: " + orientationLabel.toUpperCase(),

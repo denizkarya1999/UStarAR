@@ -2,6 +2,7 @@ package com.xamera.ar.core.components.java.sharedcamera;
 
 import static android.hardware.camera2.CaptureRequest.CONTROL_EFFECT_MODE;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -123,13 +124,11 @@ public class SharedCameraActivity extends AppCompatActivity
   private final PlaneRenderer planeRenderer = new PlaneRenderer();
   private final PointCloudRenderer pointCloudRenderer = new PointCloudRenderer();
 
-  // Scene renderers.
-  private CubeRenderer cubeRenderer;
+  // Scene renderers (cube removed).
   private ArrowRenderer arrowRenderer;
   private DirectionTabletRenderer tabletRenderer;
 
-  // Matrices for cube/arrow.
-  private final float[] anchorMatrix = new float[16];
+  // Matrix for arrow; tablet uses a local matrix.
   private final float[] arrowMatrix = new float[16];
 
   // Anchors created from taps / auto placement.
@@ -329,6 +328,7 @@ public class SharedCameraActivity extends AppCompatActivity
     startActivityForResult(intent, REQ_PICK_PREDICTION_FILE);
   }
 
+  @SuppressLint("WrongConstant")
   @Override
   protected void onActivityResult(int requestCode, int resultCode, Intent data) {
     super.onActivityResult(requestCode, resultCode, data);
@@ -612,9 +612,7 @@ public class SharedCameraActivity extends AppCompatActivity
       planeRenderer.createOnGlThread(this, "models/trigrid.png");
       pointCloudRenderer.createOnGlThread(this);
 
-      cubeRenderer = new CubeRenderer();
-      cubeRenderer.createOnGlThread();
-
+      // CubeRenderer removed – only arrow + tablet are created.
       arrowRenderer = new ArrowRenderer();
       arrowRenderer.createOnGlThread();
       arrowRenderer.setColor(0.698f, 0.871f, 0.153f, 1f);  // 178,222,39
@@ -732,9 +730,9 @@ public class SharedCameraActivity extends AppCompatActivity
       }
     }
 
-    if (cubeRenderer != null) {
-      float angleY = currentOrientationAngleDeg;  // still used for distance offset
-
+    // ---- 3) Place tablet + arrow at distance/orientation – no cube ----
+    if (!anchors.isEmpty()) {
+      float angleY = currentOrientationAngleDeg;
       float distScale = 0.25f;
       float r = currentDistanceMeters * distScale;
       double rad = Math.toRadians(angleY);
@@ -753,39 +751,30 @@ public class SharedCameraActivity extends AppCompatActivity
         float anchorY = baseMatrix[13];
         float anchorZ = baseMatrix[14];
 
-        // cube position from distance + orientation
-        float cubeX = anchorX + offsetX;
-        float cubeY = anchorY + 0.30f;
-        float cubeZ = anchorZ + offsetZ;
+        // Base position computed from distance + orientation.
+        float baseX = anchorX + offsetX;
+        float baseY = anchorY + 0.30f;
+        float baseZ = anchorZ + offsetZ;
 
-        // ----- TABLET: above cube, facing camera -----
+        // ----- TABLET: above the base position, facing the camera -----
         if (tabletRenderer != null) {
           float[] tabletMatrix = new float[16];
 
-          float dxCam = camX - cubeX;
-          float dzCam = camZ - cubeZ;
+          float dxCam = camX - baseX;
+          float dzCam = camZ - baseZ;
           float yawToCam = (float) Math.toDegrees(Math.atan2(dxCam, dzCam));
 
           Matrix.setIdentityM(tabletMatrix, 0);
-          Matrix.translateM(tabletMatrix, 0, cubeX, cubeY + 0.30f, cubeZ);
+          Matrix.translateM(tabletMatrix, 0, baseX, baseY + 0.30f, baseZ);
           Matrix.rotateM(tabletMatrix, 0, yawToCam, 0f, 1f, 0f);
 
           tabletRenderer.draw(viewmtx, projmtx, tabletMatrix);
         }
 
-        // ----- CUBE: fixed orientation -----
-        Matrix.setIdentityM(anchorMatrix, 0);
-        Matrix.translateM(anchorMatrix, 0, cubeX, cubeY, cubeZ);
-
-        cubeRenderer.setScale(0.20f);
-        cubeRenderer.setRotation(0f, 0f, 0f);
-        cubeRenderer.setPosition(0f, 0f, 0f);
-        cubeRenderer.draw(viewmtx, projmtx, anchorMatrix);
-
-        // ----- ARROW: above cube, NESW rotation in screen plane -----
+        // ----- ARROW: slightly above base, rotates in screen plane like a compass -----
         if (arrowRenderer != null) {
           Matrix.setIdentityM(arrowMatrix, 0);
-          Matrix.translateM(arrowMatrix, 0, cubeX, cubeY + 0.24f, cubeZ);
+          Matrix.translateM(arrowMatrix, 0, baseX, baseY + 0.24f, baseZ);
 
           // Rotate around Z so arrow tip spins like a compass on screen
           float arrowRotZ = -currentOrientationAngleDeg; // N=0, E=-90, NE=-45, etc.
