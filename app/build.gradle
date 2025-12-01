@@ -13,23 +13,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-apply plugin: 'com.android.application'
+apply plugin: 'com.android.library'
 
 android {
     namespace "com.google.ar.core.examples.java.sharedcamera"
     compileSdkVersion 35
 
     defaultConfig {
-        // Now this is an application module, so we define an applicationId.
-        applicationId "com.google.ar.core.examples.java.sharedcamera"
+        // ⚠️ DO NOT set applicationId in a library module.
+        // applicationId "com.google.ar.core.examples.java.sharedcamera"  <-- remove this
 
         // Camera2 API requires minSdkVersion >= 21.
         // "AR Optional" apps must declare minSdkVersion >= 14.
         // "AR Required" apps must declare minSdkVersion >= 24.
         minSdkVersion 21
         targetSdkVersion 35
+
+        // These are ignored for libraries but harmless if you keep them.
         versionCode 1
-        versionName '1.0'
+        versionName "1.0"
     }
 
     compileOptions {
@@ -41,8 +43,6 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            // If you have a custom signing config, you can re-add it here.
-            // signingConfig signingConfigs.debug
         }
     }
 }

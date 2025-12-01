@@ -2,10 +2,7 @@ package com.xamera.ar.core.components.java.sharedcamera;
 
 import static android.hardware.camera2.CaptureRequest.CONTROL_EFFECT_MODE;
 
-import android.annotation.SuppressLint;
 import android.content.Context;
-import android.content.Intent;
-import android.content.SharedPreferences;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
@@ -18,7 +15,6 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.TotalCaptureResult;
 import android.media.Image;
 import android.media.ImageReader;
-import android.net.Uri;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.opengl.Matrix;
@@ -76,14 +72,9 @@ public class SharedCameraActivity extends AppCompatActivity
 
   private static final String TAG = SharedCameraActivity.class.getSimpleName();
 
-  // At the top of your activity / renderer class (fields):
+  // Anchor state
   private boolean hasPlacedAnchor = false;
   private Pose fixedAnchorPose = null;
-
-  // Keys for SAF + SharedPreferences
-  private static final int REQ_PICK_PREDICTION_FILE = 1001;
-  private static final String PREFS_NAME = "ustar_prefs";
-  private static final String PREF_KEY_PREDICTION_URI = "prediction_uri";
 
   // AR runs automatically.
   private boolean arMode = true;
@@ -91,7 +82,7 @@ public class SharedCameraActivity extends AppCompatActivity
 
   // UI elements.
   private GLSurfaceView surfaceView;
-  private TextView statusTextView;       // Not used (hidden)
+  private TextView statusTextView;       // Not used (can stay as a placeholder)
   private LinearLayout imageTextLinearLayout;
 
   // ARCore session and shared camera.
@@ -146,9 +137,6 @@ public class SharedCameraActivity extends AppCompatActivity
   private float currentOrientationAngleDeg = 0f;
   private int currentDistanceMeters = 1;
   private String currentOrientationLabelStr = "North";
-
-  // SAF Uri for prediction file.
-  private Uri predictionFileUri;
 
   private static class ColoredAnchor {
     public final Anchor anchor;
@@ -274,11 +262,6 @@ public class SharedCameraActivity extends AppCompatActivity
       automatorRun.set(true);
     }
 
-    loadSavedPredictionUri();
-    if (predictionFileUri == null) {
-      requestPredictionFileViaSaf();
-    }
-
     surfaceView = findViewById(R.id.glsurfaceview);
     surfaceView.setPreserveEGLContextOnPause(true);
     surfaceView.setEGLContextClientVersion(2);
@@ -290,67 +273,6 @@ public class SharedCameraActivity extends AppCompatActivity
 
     imageTextLinearLayout = findViewById(R.id.image_text_layout);
     messageSnackbarHelper.setMaxLines(4);
-  }
-
-  private void loadSavedPredictionUri() {
-    SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-    String uriStr = prefs.getString(PREF_KEY_PREDICTION_URI, null);
-    if (uriStr != null) {
-      try {
-        predictionFileUri = Uri.parse(uriStr);
-        Log.d(TAG, "Loaded saved prediction URI: " + predictionFileUri);
-      } catch (Exception e) {
-        Log.e(TAG, "Failed to parse saved prediction URI", e);
-        predictionFileUri = null;
-      }
-    }
-  }
-
-  private void requestPredictionFileViaSaf() {
-    Toast.makeText(
-            this,
-            "Please select UStar_Cube_Prediction.txt from Documents.",
-            Toast.LENGTH_LONG
-    ).show();
-
-    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-    intent.addCategory(Intent.CATEGORY_OPENABLE);
-    intent.setType("text/*");
-    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
-            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
-            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-    startActivityForResult(intent, REQ_PICK_PREDICTION_FILE);
-  }
-
-  @SuppressLint("WrongConstant")
-  @Override
-  protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-    super.onActivityResult(requestCode, resultCode, data);
-
-    if (requestCode == REQ_PICK_PREDICTION_FILE) {
-      if (resultCode == RESULT_OK && data != null) {
-        Uri uri = data.getData();
-        if (uri != null) {
-          final int flags = data.getFlags()
-                  & (Intent.FLAG_GRANT_READ_URI_PERMISSION
-                  | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-          try {
-            getContentResolver().takePersistableUriPermission(uri, flags);
-          } catch (Exception e) {
-            Log.e(TAG, "takePersistableUriPermission failed", e);
-          }
-
-          predictionFileUri = uri;
-
-          SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-          prefs.edit().putString(PREF_KEY_PREDICTION_URI, uri.toString()).apply();
-
-          Log.d(TAG, "Prediction file chosen and saved: " + predictionFileUri);
-        }
-      } else {
-        Log.w(TAG, "User did not pick a prediction file; using default prediction.");
-      }
-    }
   }
 
   @Override
@@ -662,16 +584,22 @@ public class SharedCameraActivity extends AppCompatActivity
     backgroundRenderer.draw(size.getWidth(), size.getHeight(), displayAspectRatio, rotationDegrees);
   }
 
+  // ---- Helper: automatically read prediction from default location ----
+  private UStarPrediction readPredictionAutomatically() {
+    try {
+      // Uses your own helper that reads from Documents/UStar_Cube_Prediction.txt
+      return UStarPredictionReader.readFromDocuments();
+    } catch (Exception e) {
+      Log.e(TAG, "Failed to read prediction file automatically, using default.", e);
+      return new UStarPrediction(1, "North", 0f);
+    }
+  }
+
   public void onDrawFrameARCore() throws CameraNotAvailableException {
     if (!arcoreActive || errorCreatingSession) return;
 
-    // ---- 1) Read prediction from helper (using SAF Uri) ----
-    UStarPrediction prediction;
-    if (predictionFileUri != null) {
-      prediction = UStarPredictionReader.readFromUri(this, predictionFileUri);
-    } else {
-      prediction = new UStarPrediction(1, "North", 0f);
-    }
+    // ---- 1) Read prediction automatically (no SAF dialog) ----
+    UStarPrediction prediction = readPredictionAutomatically();
 
     currentDistanceMeters      = prediction.distanceMeters;
     currentOrientationAngleDeg = prediction.orientationAngleDeg;
@@ -717,7 +645,7 @@ public class SharedCameraActivity extends AppCompatActivity
               new float[]{255f, 255f, 255f, 255f}
       ));
 
-      hasPlacedAnchor = true; // ✅ never place again
+      hasPlacedAnchor = true; // never place again
     }
 
     // ---- 5) Render tablet + arrow at the FIXED anchor pose ----
@@ -743,7 +671,7 @@ public class SharedCameraActivity extends AppCompatActivity
         float baseY = anchorY + 0.20f;
         float baseZ = anchorZ;
 
-        // ----- TABLET: just above arrow, facing the camera (orientation only) -----
+        // ----- TABLET: further above arrow, facing the camera (orientation only) -----
         if (tabletRenderer != null) {
           float[] tabletMatrix = new float[16];
 
@@ -752,16 +680,18 @@ public class SharedCameraActivity extends AppCompatActivity
           float yawToCam = (float) Math.toDegrees(Math.atan2(dxCam, dzCam));
 
           Matrix.setIdentityM(tabletMatrix, 0);
-          Matrix.translateM(tabletMatrix, 0, baseX, baseY + 0.14f, baseZ);
+          // was baseY + 0.14f → raise tablet higher
+          Matrix.translateM(tabletMatrix, 0, baseX, baseY + 0.26f, baseZ);
           Matrix.rotateM(tabletMatrix, 0, yawToCam, 0f, 1f, 0f);
 
           tabletRenderer.draw(viewmtx, projmtx, tabletMatrix);
         }
 
-        // ----- ARROW: fixed at anchor, spins like a compass only -----
+        // ----- ARROW: slightly lower, spins like a compass only -----
         if (arrowRenderer != null) {
           Matrix.setIdentityM(arrowMatrix, 0);
-          Matrix.translateM(arrowMatrix, 0, baseX, baseY + 0.04f, baseZ);
+          // was baseY + 0.04f → a bit lower
+          Matrix.translateM(arrowMatrix, 0, baseX, baseY + 0.02f, baseZ);
 
           float arrowRotZ = -angleY;
 

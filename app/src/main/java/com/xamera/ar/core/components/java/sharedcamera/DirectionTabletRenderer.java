@@ -159,24 +159,25 @@ public class DirectionTabletRenderer {
 
     /**
      * Build a 1024x512 bitmap with a title + text, on a freeway green tablet.
-     * Vertical padding and line spacing are tightened so there is less
-     * empty space between lines and at the bottom.
+     * Bottom padding reduced so there is almost no black area below the panel.
      */
     private Bitmap buildPanelBitmap(int distanceMeters, String orientationLabel) {
         Bitmap bmp = Bitmap.createBitmap(1024, 512, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bmp);
 
-        // Clear
+        // Clear BG
         canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
 
         // FREEWAY SIGN GREEN — #006A4E (RGB 0,106,78)
         Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         bgPaint.setColor(Color.rgb(0, 106, 78));  // deep green freeway color
 
-        // Slightly reduced bottom padding (was bottom=472f)
-        canvas.drawRoundRect(40f, 40f, 984f, 440f, 30f, 30f, bgPaint);
+        // ⬇️ FIX: extend the bottom to reduce black space
+        // Old: bottom = 420f (too high → black strip)
+        // New: bottom = 472f (near bottom of 512px bitmap)
+        canvas.drawRoundRect(40f, 40f, 984f, 472f, 30f, 30f, bgPaint);
 
-        // --- Title: "Current Direction Info" at top ---
+        // --- Title ---
         Paint titlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         titlePaint.setColor(Color.WHITE);
         titlePaint.setTextSize(72f);
@@ -184,11 +185,11 @@ public class DirectionTabletRenderer {
         titlePaint.setTextAlign(Paint.Align.CENTER);
 
         float centerX = bmp.getWidth() / 2f;
-        float titleY  = 120f; // slightly higher = tighter top spacing
+        float titleY  = 120f;
 
         canvas.drawText("Current Direction Info", centerX, titleY, titlePaint);
 
-        // --- Body text (orientation + distance), left aligned ---
+        // --- Body text ---
         Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         textPaint.setColor(Color.WHITE);
         textPaint.setTextSize(64f);
@@ -196,8 +197,8 @@ public class DirectionTabletRenderer {
         textPaint.setTextAlign(Paint.Align.LEFT);
 
         float leftTextX   = 80f;
-        float baseY       = 230f;  // just under title
-        float lineSpacing = 72f;   // was 90f -> lines closer together
+        float baseY       = 230f;
+        float lineSpacing = 72f;
 
         canvas.drawText(
                 "ORIENTATION: " + orientationLabel.toUpperCase(),

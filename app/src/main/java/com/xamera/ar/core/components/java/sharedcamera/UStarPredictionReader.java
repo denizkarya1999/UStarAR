@@ -2,27 +2,68 @@ package com.xamera.ar.core.components.java.sharedcamera;
 
 import android.content.Context;
 import android.net.Uri;
+import android.os.Environment;
 import android.util.Log;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStreamReader;
 
 /**
- * Reads UStar_Cube_Prediction.txt via SAF Uri
- * and parses distance + orientation.
+ * Utility to read and parse UStar_Cube_Prediction.txt into a UStarPrediction.
  */
-public final class UStarPredictionReader {
+public class UStarPredictionReader {
 
     private static final String TAG = "UStarPredictionReader";
 
+    // Default content if file can't be read
     private static final String DEFAULT_TEXT =
-            "UStar UIOD Tag Features\n" +
-                    "Prediction Date: N/A\n" +
-                    "OpenCV Initialization Status: false\n" +
-                    "Distance: 1M | Orientation: North";
+            "Distance: 1M | Orientation: North";
 
-    private UStarPredictionReader() { }
+    /**
+     * Preferred: read from a fixed file in Documents:
+     *   Documents/UStar_Cube_Prediction.txt
+     */
+    public static UStarPrediction readFromDocuments() {
+        String rawText = DEFAULT_TEXT;
 
+        try {
+            File docDir = Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOCUMENTS);
+            File file = new File(docDir, "UStar_Cube_Prediction.txt");
+
+            if (file.exists()) {
+                FileInputStream fis = new FileInputStream(file);
+                BufferedReader br = new BufferedReader(new InputStreamReader(fis));
+
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = br.readLine()) != null) {
+                    sb.append(line).append('\n');
+                }
+                br.close();
+                fis.close();
+
+                String read = sb.toString().trim();
+                if (!read.isEmpty()) {
+                    rawText = read;
+                }
+            } else {
+                Log.w(TAG, "Prediction file not found in Documents; using default.");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error reading prediction file from Documents", e);
+            rawText = DEFAULT_TEXT;
+        }
+
+        return parseRawText(rawText);
+    }
+
+    /**
+     * Optional: still supports SAF Uri if you use it anywhere else.
+     * SharedCameraActivity doesn't need this anymore, but we keep it for compatibility.
+     */
     public static UStarPrediction readFromUri(Context context, Uri uri) {
         String rawText = DEFAULT_TEXT;
 
@@ -45,6 +86,15 @@ public final class UStarPredictionReader {
             rawText = DEFAULT_TEXT;
         }
 
+        return parseRawText(rawText);
+    }
+
+    /**
+     * Common parsing logic used by both readFromDocuments() and readFromUri().
+     * Expected patterns, e.g.:
+     *   "Distance: 4M | Orientation: Southwest"
+     */
+    private static UStarPrediction parseRawText(String rawText) {
         Integer distanceMeters = null;
         String orientationLabel = "North";
 
@@ -70,19 +120,24 @@ public final class UStarPredictionReader {
         // --- Fallbacks if that pattern wasn't found ---
         if (distanceMeters == null) {
             java.util.regex.Matcher distMatcher = java.util.regex.Pattern
-                    .compile("Distance:\\s*(\\d+)\\s*[mM]", java.util.regex.Pattern.CASE_INSENSITIVE)
+                    .compile("Distance:\\s*(\\d+)\\s*[mM]",
+                            java.util.regex.Pattern.CASE_INSENSITIVE)
                     .matcher(rawText);
             if (distMatcher.find()) {
-                try { distanceMeters = Integer.parseInt(distMatcher.group(1)); } catch (NumberFormatException ignored) {}
+                try {
+                    distanceMeters = Integer.parseInt(distMatcher.group(1));
+                } catch (NumberFormatException ignored) {}
             }
         }
 
-        // If we never saw an "Orientation: ..." on a Distance line, fallback to last Orientation: line
+        // If we never saw an "Orientation: ..." on a Distance line,
+        // fallback to last Orientation: line anywhere.
         if (orientationLabel == null || orientationLabel.isEmpty() || "North".equals(orientationLabel)) {
             String lastOrientation = null;
             for (String line : lines) {
                 java.util.regex.Matcher oriMatcher = java.util.regex.Pattern
-                        .compile("Orientation:\\s*([A-Za-z]+)", java.util.regex.Pattern.CASE_INSENSITIVE)
+                        .compile("Orientation:\\s*([A-Za-z]+)",
+                                java.util.regex.Pattern.CASE_INSENSITIVE)
                         .matcher(line);
                 if (oriMatcher.find()) {
                     lastOrientation = oriMatcher.group(1);
@@ -96,7 +151,7 @@ public final class UStarPredictionReader {
         if (distanceMeters == null) distanceMeters = 1;
         distanceMeters = Math.max(1, Math.min(4, distanceMeters));
 
-        // 🔒 Clamp to one of 8 compass labels
+        // Clamp to one of 8 compass labels
         orientationLabel = sanitizeOrientationLabel(orientationLabel);
         float angleDeg = orientationToAngle(orientationLabel);
 
