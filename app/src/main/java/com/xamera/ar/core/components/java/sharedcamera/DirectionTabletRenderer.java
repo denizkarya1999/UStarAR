@@ -32,9 +32,9 @@ public class DirectionTabletRenderer {
 
     private static final String TAG = "DirectionTabletRenderer";
 
-    private static final int BYTES_PER_FLOAT = 4;
+    private static final int BYTES_PER_FLOAT   = 4;
     private static final int COORDS_PER_VERTEX = 3;
-    private static final int TEX_PER_VERTEX = 2;
+    private static final int TEX_PER_VERTEX    = 2;
 
     private FloatBuffer vertexBuffer;
     private FloatBuffer texBuffer;
@@ -49,16 +49,17 @@ public class DirectionTabletRenderer {
 
     // Matrices
     private final float[] modelMatrix = new float[16];
-    private final float[] tempMatrix = new float[16];
-    private final float[] finalMvp = new float[16];
+    private final float[] tempMatrix  = new float[16];
+    private final float[] finalMvp    = new float[16];
 
     // Panel transform (relative to anchor)
-    private float posX = 0f, posY = 0.25f, posZ = 0f;  // float above cube (or anchor)
+    // Smaller Y offset so tablet sits closer to arrow
+    private float posX = 0f, posY = 0.05f, posZ = 0f;
     private float rotX = 0f, rotY = 0f, rotZ = 0f;
     private float scale = 0.15f; // overall size
 
     // Latest values (provided externally)
-    private int currentDistanceMeters = 1;
+    private int    currentDistanceMeters   = 1;
     private String currentOrientationLabel = "North";
 
     // Simple rectangle (two triangles) in local space, centered at origin, Z=0
@@ -144,8 +145,6 @@ public class DirectionTabletRenderer {
     /**
      * Update text from external values (distance + orientation)
      * and rebuild the texture.
-     *
-     * Call this from SharedCameraActivity when txt changes.
      */
     public void updateFromValues(int distanceMeters, String orientationLabel) {
         currentDistanceMeters = distanceMeters;
@@ -158,7 +157,11 @@ public class DirectionTabletRenderer {
         panelBmp.recycle();
     }
 
-    /** Build a 1024x512 bitmap with a title + text, on a freeway green tablet. */
+    /**
+     * Build a 1024x512 bitmap with a title + text, on a freeway green tablet.
+     * Vertical padding and line spacing are tightened so there is less
+     * empty space between lines and at the bottom.
+     */
     private Bitmap buildPanelBitmap(int distanceMeters, String orientationLabel) {
         Bitmap bmp = Bitmap.createBitmap(1024, 512, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bmp);
@@ -169,7 +172,9 @@ public class DirectionTabletRenderer {
         // FREEWAY SIGN GREEN — #006A4E (RGB 0,106,78)
         Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         bgPaint.setColor(Color.rgb(0, 106, 78));  // deep green freeway color
-        canvas.drawRoundRect(40f, 40f, 984f, 472f, 30f, 30f, bgPaint);
+
+        // Slightly reduced bottom padding (was bottom=472f)
+        canvas.drawRoundRect(40f, 40f, 984f, 440f, 30f, 30f, bgPaint);
 
         // --- Title: "Current Direction Info" at top ---
         Paint titlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -179,7 +184,7 @@ public class DirectionTabletRenderer {
         titlePaint.setTextAlign(Paint.Align.CENTER);
 
         float centerX = bmp.getWidth() / 2f;
-        float titleY = 130f; // vertical position for title
+        float titleY  = 120f; // slightly higher = tighter top spacing
 
         canvas.drawText("Current Direction Info", centerX, titleY, titlePaint);
 
@@ -190,8 +195,9 @@ public class DirectionTabletRenderer {
         textPaint.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
         textPaint.setTextAlign(Paint.Align.LEFT);
 
-        float leftTextX = 80f;
-        float baseY = 220f;  // push a bit lower to sit under title
+        float leftTextX   = 80f;
+        float baseY       = 230f;  // just under title
+        float lineSpacing = 72f;   // was 90f -> lines closer together
 
         canvas.drawText(
                 "ORIENTATION: " + orientationLabel.toUpperCase(),
@@ -203,7 +209,7 @@ public class DirectionTabletRenderer {
         canvas.drawText(
                 "DISTANCE: " + distanceMeters + "m",
                 leftTextX,
-                baseY + 90f,
+                baseY + lineSpacing,
                 textPaint
         );
 
@@ -256,8 +262,8 @@ public class DirectionTabletRenderer {
         // proj * ...
         Matrix.multiplyMM(finalMvp, 0, projMatrix, 0, finalMvp, 0);
 
-        positionHandle = GLES20.glGetAttribLocation(program, "aPosition");
-        texCoordHandle = GLES20.glGetAttribLocation(program, "aTexCoord");
+        positionHandle  = GLES20.glGetAttribLocation(program, "aPosition");
+        texCoordHandle  = GLES20.glGetAttribLocation(program, "aTexCoord");
         mvpMatrixHandle = GLES20.glGetUniformLocation(program, "uMVPMatrix");
         samplerHandle   = GLES20.glGetUniformLocation(program, "uTexture");
 

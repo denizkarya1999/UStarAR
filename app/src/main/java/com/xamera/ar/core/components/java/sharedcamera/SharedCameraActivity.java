@@ -43,13 +43,9 @@ import com.google.ar.core.ArCoreApk;
 import com.google.ar.core.Camera;
 import com.google.ar.core.Config;
 import com.google.ar.core.Frame;
-import com.google.ar.core.HitResult;
-import com.google.ar.core.Plane;
-import com.google.ar.core.Point;
-import com.google.ar.core.PointCloud;
+import com.google.ar.core.Pose;
 import com.google.ar.core.Session;
 import com.google.ar.core.SharedCamera;
-import com.google.ar.core.Trackable;
 import com.google.ar.core.TrackingState;
 import com.google.ar.core.examples.java.sharedcamera.R;
 import com.google.ar.core.exceptions.CameraNotAvailableException;
@@ -58,7 +54,6 @@ import com.xamera.ar.core.components.java.common.helpers.CameraPermissionHelper;
 import com.xamera.ar.core.components.java.common.helpers.DisplayRotationHelper;
 import com.xamera.ar.core.components.java.common.helpers.FullScreenHelper;
 import com.xamera.ar.core.components.java.common.helpers.SnackbarHelper;
-import com.xamera.ar.core.components.java.common.helpers.TapHelper;
 import com.xamera.ar.core.components.java.common.helpers.TrackingStateHelper;
 import com.xamera.ar.core.components.java.common.rendering.BackgroundRenderer;
 import com.xamera.ar.core.components.java.common.rendering.PlaneRenderer;
@@ -80,6 +75,10 @@ public class SharedCameraActivity extends AppCompatActivity
         SurfaceTexture.OnFrameAvailableListener {
 
   private static final String TAG = SharedCameraActivity.class.getSimpleName();
+
+  // At the top of your activity / renderer class (fields):
+  private boolean hasPlacedAnchor = false;
+  private Pose fixedAnchorPose = null;
 
   // Keys for SAF + SharedPreferences
   private static final int REQ_PICK_PREDICTION_FILE = 1001;
@@ -117,7 +116,6 @@ public class SharedCameraActivity extends AppCompatActivity
   private final SnackbarHelper messageSnackbarHelper = new SnackbarHelper();
   private DisplayRotationHelper displayRotationHelper;
   private final TrackingStateHelper trackingStateHelper = new TrackingStateHelper(this);
-  private TapHelper tapHelper;
 
   // Renderers.
   private final BackgroundRenderer backgroundRenderer = new BackgroundRenderer();
@@ -131,7 +129,7 @@ public class SharedCameraActivity extends AppCompatActivity
   // Matrix for arrow; tablet uses a local matrix.
   private final float[] arrowMatrix = new float[16];
 
-  // Anchors created from taps / auto placement.
+  // Anchors (we’ll only ever use one).
   private final ArrayList<ColoredAnchor> anchors = new ArrayList<>();
 
   private static final Short AUTOMATOR_DEFAULT = 0;
@@ -143,8 +141,6 @@ public class SharedCameraActivity extends AppCompatActivity
 
   private final float[] mModelMatrix = new float[16];
   private final float[] mMVPMatrix = new float[16];
-
-  private boolean autoAnchorCreated = false;
 
   // Cached latest prediction.
   private float currentOrientationAngleDeg = 0f;
@@ -291,8 +287,6 @@ public class SharedCameraActivity extends AppCompatActivity
     surfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
 
     displayRotationHelper = new DisplayRotationHelper(this);
-    tapHelper = new TapHelper(this);
-    surfaceView.setOnTouchListener(tapHelper);
 
     imageTextLinearLayout = findViewById(R.id.image_text_layout);
     messageSnackbarHelper.setMaxLines(4);
@@ -612,15 +606,14 @@ public class SharedCameraActivity extends AppCompatActivity
       planeRenderer.createOnGlThread(this, "models/trigrid.png");
       pointCloudRenderer.createOnGlThread(this);
 
-      // CubeRenderer removed – only arrow + tablet are created.
       arrowRenderer = new ArrowRenderer();
       arrowRenderer.createOnGlThread();
       arrowRenderer.setColor(0.698f, 0.871f, 0.153f, 1f);  // 178,222,39
 
       tabletRenderer = new DirectionTabletRenderer();
       tabletRenderer.createOnGlThread();
-      tabletRenderer.setPosition(0f, 0.30f, 0f); // higher
-      tabletRenderer.setScale(0.30f);           // larger tablet
+      tabletRenderer.setPosition(0f, 0.05f, 0f);
+      tabletRenderer.setScale(0.30f);
 
       openCamera();
     } catch (IOException e) {
@@ -680,8 +673,8 @@ public class SharedCameraActivity extends AppCompatActivity
       prediction = new UStarPrediction(1, "North", 0f);
     }
 
-    currentDistanceMeters = prediction.distanceMeters;
-    currentOrientationAngleDeg = prediction.orientationAngleDeg; // 0=N, 45=NE, ...
+    currentDistanceMeters      = prediction.distanceMeters;
+    currentOrientationAngleDeg = prediction.orientationAngleDeg;
     currentOrientationLabelStr = prediction.orientationLabel;
 
     // ---- 2) Update tablet text from prediction ----
@@ -689,7 +682,8 @@ public class SharedCameraActivity extends AppCompatActivity
       tabletRenderer.updateFromValues(currentDistanceMeters, currentOrientationLabelStr);
     }
 
-    Frame frame = sharedSession.update();
+    // ---- 3) Standard ARCore frame + camera matrices ----
+    Frame frame  = sharedSession.update();
     Camera camera = frame.getCamera();
 
     backgroundRenderer.draw(frame);
@@ -699,46 +693,36 @@ public class SharedCameraActivity extends AppCompatActivity
     camera.getProjectionMatrix(projmtx, 0, 0.1f, 100.0f);
     camera.getViewMatrix(viewmtx, 0);
 
+    // For optional facing-the-camera behavior (tablet billboard)
     float[] invView = new float[16];
     Matrix.invertM(invView, 0, viewmtx, 0);
     float camX = invView[12];
     float camY = invView[13];
     float camZ = invView[14];
 
-    // Anchor creation (center of screen).
-    if (!autoAnchorCreated && camera.getTrackingState() == TrackingState.TRACKING) {
-      final int centerX = surfaceView.getWidth() / 2;
-      final int centerY = surfaceView.getHeight() / 2;
-      for (HitResult hit : frame.hitTest(centerX, centerY)) {
-        Trackable trackable = hit.getTrackable();
-        if (((trackable instanceof Plane)
-                && ((Plane) trackable).isPoseInPolygon(hit.getHitPose())
-                && (PlaneRenderer.calculateDistanceToPlane(hit.getHitPose(), camera.getPose()) > 0))
-                ||
-                ((trackable instanceof Point)
-                        && ((Point) trackable).getOrientationMode()
-                        == Point.OrientationMode.ESTIMATED_SURFACE_NORMAL)) {
+    // ---- 4) PLACE THE ANCHOR ONLY ONCE, THEN NEVER MOVE IT ----
+    if (!hasPlacedAnchor && camera.getTrackingState() == TrackingState.TRACKING) {
+      float depthMeters = 1.5f; // distance in front of camera at creation
+      Pose cameraPose   = camera.getPose();
 
-          if (anchors.size() >= 20) {
-            anchors.get(0).anchor.detach();
-            anchors.remove(0);
-          }
-          anchors.add(new ColoredAnchor(hit.createAnchor(), new float[]{255f, 255f, 255f, 255f}));
-          autoAnchorCreated = true;
-          break;
-        }
-      }
+      // +Z is forward in ARCore camera space; (0,0,-depth) in camera space
+      Pose worldPose = cameraPose.compose(Pose.makeTranslation(0f, 0f, -depthMeters));
+
+      // Store this pose permanently so the object "sticks" here
+      fixedAnchorPose = worldPose;
+
+      anchors.clear(); // ensure only one anchor
+      anchors.add(new ColoredAnchor(
+              sharedSession.createAnchor(worldPose),
+              new float[]{255f, 255f, 255f, 255f}
+      ));
+
+      hasPlacedAnchor = true; // ✅ never place again
     }
 
-    // ---- 3) Place tablet + arrow at distance/orientation – no cube ----
-    if (!anchors.isEmpty()) {
+    // ---- 5) Render tablet + arrow at the FIXED anchor pose ----
+    if (!anchors.isEmpty() && fixedAnchorPose != null) {
       float angleY = currentOrientationAngleDeg;
-      float distScale = 0.25f;
-      float r = currentDistanceMeters * distScale;
-      double rad = Math.toRadians(angleY);
-
-      float offsetX = (float) (r * Math.sin(rad));
-      float offsetZ = (float) (r * Math.cos(rad));
 
       for (ColoredAnchor coloredAnchor : anchors) {
         if (coloredAnchor.anchor.getTrackingState() != TrackingState.TRACKING) {
@@ -746,17 +730,20 @@ public class SharedCameraActivity extends AppCompatActivity
         }
 
         float[] baseMatrix = new float[16];
-        coloredAnchor.anchor.getPose().toMatrix(baseMatrix, 0);
+
+        // Always use the pose captured at creation time
+        fixedAnchorPose.toMatrix(baseMatrix, 0);
+
         float anchorX = baseMatrix[12];
         float anchorY = baseMatrix[13];
         float anchorZ = baseMatrix[14];
 
-        // Base position computed from distance + orientation.
-        float baseX = anchorX + offsetX;
-        float baseY = anchorY + 0.30f;
-        float baseZ = anchorZ + offsetZ;
+        // Base position = fixed anchor position with a bit of lift.
+        float baseX = anchorX;
+        float baseY = anchorY + 0.20f;
+        float baseZ = anchorZ;
 
-        // ----- TABLET: above the base position, facing the camera -----
+        // ----- TABLET: just above arrow, facing the camera (orientation only) -----
         if (tabletRenderer != null) {
           float[] tabletMatrix = new float[16];
 
@@ -765,19 +752,18 @@ public class SharedCameraActivity extends AppCompatActivity
           float yawToCam = (float) Math.toDegrees(Math.atan2(dxCam, dzCam));
 
           Matrix.setIdentityM(tabletMatrix, 0);
-          Matrix.translateM(tabletMatrix, 0, baseX, baseY + 0.30f, baseZ);
+          Matrix.translateM(tabletMatrix, 0, baseX, baseY + 0.14f, baseZ);
           Matrix.rotateM(tabletMatrix, 0, yawToCam, 0f, 1f, 0f);
 
           tabletRenderer.draw(viewmtx, projmtx, tabletMatrix);
         }
 
-        // ----- ARROW: slightly above base, rotates in screen plane like a compass -----
+        // ----- ARROW: fixed at anchor, spins like a compass only -----
         if (arrowRenderer != null) {
           Matrix.setIdentityM(arrowMatrix, 0);
-          Matrix.translateM(arrowMatrix, 0, baseX, baseY + 0.24f, baseZ);
+          Matrix.translateM(arrowMatrix, 0, baseX, baseY + 0.04f, baseZ);
 
-          // Rotate around Z so arrow tip spins like a compass on screen
-          float arrowRotZ = -currentOrientationAngleDeg; // N=0, E=-90, NE=-45, etc.
+          float arrowRotZ = -angleY;
 
           arrowRenderer.setScale(0.20f);
           arrowRenderer.setRotation(0f, 0f, arrowRotZ);
