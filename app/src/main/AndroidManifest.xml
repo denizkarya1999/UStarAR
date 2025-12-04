@@ -45,6 +45,12 @@
         android:exported="true"
         android:resizeableActivity="false">
 
+      <!-- ADD THIS TO MAKE IT THE MAIN ACTIVITY -->
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/>
+      </intent-filter>
+
     </activity>
 
     <!-- ARCore metadata -->

@@ -13,15 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-apply plugin: 'com.android.library'
+apply plugin: 'com.android.application'
 
 android {
     namespace "com.google.ar.core.examples.java.sharedcamera"
     compileSdkVersion 35
 
     defaultConfig {
-        // ⚠️ DO NOT set applicationId in a library module.
-        // applicationId "com.google.ar.core.examples.java.sharedcamera"  <-- remove this
+        // ⚠️ DO NOT set applicationId in a library module (if converted back to library).
+        applicationId "com.google.ar.core.examples.java.sharedcamera"
 
         // Camera2 API requires minSdkVersion >= 21.
         // "AR Optional" apps must declare minSdkVersion >= 14.
