@@ -3,6 +3,7 @@ package com.xamera.ar.core.components.java.sharedcamera;
 import static android.hardware.camera2.CaptureRequest.CONTROL_EFFECT_MODE;
 
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraAccessException;
@@ -15,14 +16,17 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.TotalCaptureResult;
 import android.media.Image;
 import android.media.ImageReader;
+import android.net.Uri;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.opengl.Matrix;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.ConditionVariable;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.provider.Settings;
 import android.util.Log;
 import android.util.Size;
 import android.view.Surface;
@@ -273,6 +277,7 @@ public class SharedCameraActivity extends AppCompatActivity
 
     imageTextLinearLayout = findViewById(R.id.image_text_layout);
     messageSnackbarHelper.setMaxLines(4);
+    ensureAllFilesAccess();
   }
 
   @Override
@@ -530,7 +535,7 @@ public class SharedCameraActivity extends AppCompatActivity
 
       arrowRenderer = new ArrowRenderer();
       arrowRenderer.createOnGlThread();
-      arrowRenderer.setColor(0.698f, 0.871f, 0.153f, 1f);  // 178,222,39
+      arrowRenderer.setColor(1.0f, 0.0f, 0.0f, 1.0f);      // bright red
 
       tabletRenderer = new DirectionTabletRenderer();
       tabletRenderer.createOnGlThread();
@@ -587,11 +592,20 @@ public class SharedCameraActivity extends AppCompatActivity
   // ---- Helper: automatically read prediction from default location ----
   private UStarPrediction readPredictionAutomatically() {
     try {
-      // Uses your own helper that reads from Documents/UStar_Cube_Prediction.txt
-      return UStarPredictionReader.readFromDocuments();
+      return UStarPredictionReader.readFromDocuments(this);
     } catch (Exception e) {
       Log.e(TAG, "Failed to read prediction file automatically, using default.", e);
       return new UStarPrediction(1, "North", 0f);
+    }
+  }
+
+  private void ensureAllFilesAccess() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) { // API 30+
+      if (!Environment.isExternalStorageManager()) {
+        Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+        intent.setData(Uri.parse("package:" + getPackageName()));
+        startActivity(intent);
+      }
     }
   }
 
@@ -687,17 +701,20 @@ public class SharedCameraActivity extends AppCompatActivity
           tabletRenderer.draw(viewmtx, projmtx, tabletMatrix);
         }
 
-        // ----- ARROW: slightly lower, spins like a compass only -----
+        // ----- ARROW: slightly lower, chunky and 3D-looking -----
         if (arrowRenderer != null) {
           Matrix.setIdentityM(arrowMatrix, 0);
-          // was baseY + 0.04f → a bit lower
           Matrix.translateM(arrowMatrix, 0, baseX, baseY + 0.02f, baseZ);
 
-          float arrowRotZ = -angleY;
+          // ✅ fixed rotation: always the same
+          float tiltX = -60.0f;  // lean toward camera for 3D look
+          float yawDeg = 0.0f;   // no spin based on orientation
+          float rollDeg = 0.0f;
 
-          arrowRenderer.setScale(0.20f);
-          arrowRenderer.setRotation(0f, 0f, arrowRotZ);
+          arrowRenderer.setScale(0.30f);
+          arrowRenderer.setRotation(tiltX, yawDeg, rollDeg);
           arrowRenderer.setPosition(0f, 0f, 0f);
+
           arrowRenderer.draw(viewmtx, projmtx, arrowMatrix);
         }
       }

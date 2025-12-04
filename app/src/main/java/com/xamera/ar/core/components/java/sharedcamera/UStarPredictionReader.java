@@ -21,21 +21,29 @@ public class UStarPredictionReader {
     private static final String DEFAULT_TEXT =
             "Distance: 1M | Orientation: North";
 
-    /**
+    /*
      * Preferred: read from a fixed file in Documents:
      *   Documents/UStar_Cube_Prediction.txt
      */
-    public static UStarPrediction readFromDocuments() {
+    /**
+     * Preferred: read from app-specific external Documents:
+     *   /storage/emulated/0/Android/data/<package>/files/Documents/UStar_Cube_Prediction.txt
+     */
+    public static UStarPrediction readFromDocuments(Context context) {
         String rawText = DEFAULT_TEXT;
 
         try {
+            // 👉 PUBLIC Documents folder:
             File docDir = Environment.getExternalStoragePublicDirectory(
-                    Environment.DIRECTORY_DOCUMENTS);
+                    Environment.DIRECTORY_DOCUMENTS
+            );
             File file = new File(docDir, "UStar_Cube_Prediction.txt");
+
+            Log.d(TAG, "Trying Documents file: " + file.getAbsolutePath());
 
             if (file.exists()) {
                 FileInputStream fis = new FileInputStream(file);
-                BufferedReader br = new BufferedReader(new InputStreamReader(fis));
+                BufferedReader br  = new BufferedReader(new InputStreamReader(fis));
 
                 StringBuilder sb = new StringBuilder();
                 String line;
@@ -50,7 +58,7 @@ public class UStarPredictionReader {
                     rawText = read;
                 }
             } else {
-                Log.w(TAG, "Prediction file not found in Documents; using default.");
+                Log.w(TAG, "Prediction file not found in Documents: " + file.getAbsolutePath());
             }
         } catch (Exception e) {
             Log.e(TAG, "Error reading prediction file from Documents", e);
