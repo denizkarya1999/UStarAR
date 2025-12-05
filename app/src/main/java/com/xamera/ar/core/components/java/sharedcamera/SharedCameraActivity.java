@@ -619,6 +619,12 @@ public class SharedCameraActivity extends AppCompatActivity
     currentOrientationAngleDeg = prediction.orientationAngleDeg;
     currentOrientationLabelStr = prediction.orientationLabel;
 
+
+    // ---- 1) tell ArrowRenderer what distance to embed
+    if (arrowRenderer != null) {
+      arrowRenderer.setDistance(currentDistanceMeters);
+    }
+
     // ---- 2) Update tablet text from prediction ----
     if (tabletRenderer != null) {
       tabletRenderer.updateFromValues(currentDistanceMeters, currentOrientationLabelStr);
@@ -711,7 +717,7 @@ public class SharedCameraActivity extends AppCompatActivity
           float yawDeg = 0.0f;   // no spin based on orientation
           float rollDeg = 0.0f;
 
-          arrowRenderer.setScale(0.30f);
+          arrowRenderer.setScale(0.80f);
           arrowRenderer.setRotation(tiltX, yawDeg, rollDeg);
           arrowRenderer.setPosition(0f, 0f, 0f);
 
