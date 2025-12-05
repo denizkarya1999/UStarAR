@@ -540,7 +540,7 @@ public class SharedCameraActivity extends AppCompatActivity
       tabletRenderer = new DirectionTabletRenderer();
       tabletRenderer.createOnGlThread();
       tabletRenderer.setPosition(0f, 0.05f, 0f);
-      tabletRenderer.setScale(0.30f);
+      tabletRenderer.setScale(0.15f);
 
       openCamera();
     } catch (IOException e) {
@@ -700,8 +700,7 @@ public class SharedCameraActivity extends AppCompatActivity
           float yawToCam = (float) Math.toDegrees(Math.atan2(dxCam, dzCam));
 
           Matrix.setIdentityM(tabletMatrix, 0);
-          // was baseY + 0.14f → raise tablet higher
-          Matrix.translateM(tabletMatrix, 0, baseX, baseY + 0.26f, baseZ);
+          Matrix.translateM(tabletMatrix, 0, baseX, baseY + 0.24f, baseZ);
           Matrix.rotateM(tabletMatrix, 0, yawToCam, 0f, 1f, 0f);
 
           tabletRenderer.draw(viewmtx, projmtx, tabletMatrix);

@@ -9,28 +9,12 @@ import android.graphics.Typeface;
 import android.opengl.GLES20;
 import android.opengl.GLUtils;
 import android.opengl.Matrix;
-import android.util.Log;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 
-/**
- * Renders a "tablet" panel that displays direction + distance.
- *
- * NO file I/O here – values are pushed from SharedCameraActivity
- * via updateFromValues(distance, orientation).
- *
- * The panel is a textured quad drawn in 3D; texture contains:
- *  - "Current Direction Info" (title)
- *  - ORIENTATION: <label>
- *  - DISTANCE: <Xm>
- *
- * Tablet background is freeway green, with no arrow graphic.
- */
 public class DirectionTabletRenderer {
-
-    private static final String TAG = "DirectionTabletRenderer";
 
     private static final int BYTES_PER_FLOAT   = 4;
     private static final int COORDS_PER_VERTEX = 3;
@@ -52,20 +36,16 @@ public class DirectionTabletRenderer {
     private final float[] tempMatrix  = new float[16];
     private final float[] finalMvp    = new float[16];
 
-    // Panel transform (relative to anchor)
-    // Smaller Y offset so tablet sits closer to arrow
+    // Panel transform
     private float posX = 0f, posY = 0.05f, posZ = 0f;
     private float rotX = 0f, rotY = 0f, rotZ = 0f;
-    private float scale = 0.15f; // overall size
+    private float scale = 0.85f;
 
-    // Latest values (provided externally)
-    private int    currentDistanceMeters   = 1;
+    // Latest value from SharedCameraActivity
     private String currentOrientationLabel = "North";
 
-    // Simple rectangle (two triangles) in local space, centered at origin, Z=0
-    // Width = 1.0, height = 0.6 (landscape panel)
+    // Quad geometry
     private static final float[] QUAD_COORDS = {
-            //  X,     Y,    Z
             -0.5f, -0.3f, 0f,
             0.5f, -0.3f, 0f,
             0.5f,  0.3f, 0f,
@@ -76,7 +56,6 @@ public class DirectionTabletRenderer {
     };
 
     private static final float[] QUAD_TEX = {
-            //  U, V
             0f, 1f,
             1f, 1f,
             1f, 0f,
@@ -86,7 +65,7 @@ public class DirectionTabletRenderer {
             0f, 0f
     };
 
-    // Basic textured shader
+    // Shaders
     private static final String VERTEX_SHADER =
             "uniform mat4 uMVPMatrix;" +
                     "attribute vec4 aPosition;" +
@@ -109,6 +88,23 @@ public class DirectionTabletRenderer {
         Matrix.setIdentityM(modelMatrix, 0);
     }
 
+    /** Converts long names into compass abbreviations (N, NE, E, SE, S, SW, W, NW). */
+    private String toCompassAbbrev(String label) {
+        if (label == null) return "N";
+        String s = label.trim().toLowerCase();
+
+        if (s.startsWith("northwest")) return "NW";
+        if (s.startsWith("northeast")) return "NE";
+        if (s.startsWith("southwest")) return "SW";
+        if (s.startsWith("southeast")) return "SE";
+        if (s.startsWith("north"))     return "N";
+        if (s.startsWith("south"))     return "S";
+        if (s.startsWith("east"))      return "E";
+        if (s.startsWith("west"))      return "W";
+
+        return "N";
+    }
+
     public void createOnGlThread() {
         // Vertex buffer
         ByteBuffer vb = ByteBuffer.allocateDirect(QUAD_COORDS.length * BYTES_PER_FLOAT);
@@ -116,7 +112,7 @@ public class DirectionTabletRenderer {
         vertexBuffer = vb.asFloatBuffer();
         vertexBuffer.put(QUAD_COORDS).position(0);
 
-        // Texcoord buffer
+        // Texture coordinates
         ByteBuffer tb = ByteBuffer.allocateDirect(QUAD_TEX.length * BYTES_PER_FLOAT);
         tb.order(ByteOrder.nativeOrder());
         texBuffer = tb.asFloatBuffer();
@@ -142,77 +138,40 @@ public class DirectionTabletRenderer {
     public void setRotation(float x, float y, float z) { rotX = x; rotY = y; rotZ = z; }
     public void setScale(float s) { scale = s; }
 
-    /**
-     * Update text from external values (distance + orientation)
-     * and rebuild the texture.
-     */
-    public void updateFromValues(int distanceMeters, String orientationLabel) {
-        currentDistanceMeters = distanceMeters;
-        currentOrientationLabel = (orientationLabel != null && !orientationLabel.isEmpty())
-                ? orientationLabel
-                : "North";
-
-        Bitmap panelBmp = buildPanelBitmap(currentDistanceMeters, currentOrientationLabel);
-        uploadTexture(panelBmp);
-        panelBmp.recycle();
+    /** Only orientation is used now. */
+    public void updateFromValues(int distanceMetersIgnored, String orientationLabel) {
+        currentOrientationLabel = toCompassAbbrev(orientationLabel);
+        Bitmap bmp = buildPanelBitmap(currentOrientationLabel);
+        uploadTexture(bmp);
+        bmp.recycle();
     }
 
-    /**
-     * Build a 1024x512 bitmap with a title + text, on a freeway green tablet.
-     * Bottom padding reduced so there is almost no black area below the panel.
-     */
-    private Bitmap buildPanelBitmap(int distanceMeters, String orientationLabel) {
-        Bitmap bmp = Bitmap.createBitmap(1024, 512, Bitmap.Config.ARGB_8888);
+    /** Build bitmap showing ONLY orientation (N, NE, E, SE, ...) with no black padding. */
+    private Bitmap buildPanelBitmap(String shortOrientation) {
+        int w = 1024;
+        int h = 384;  // taller for a big, clear letter
+
+        Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bmp);
 
-        // Clear BG
-        canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR);
+        // Fill ENTIRE texture with freeway green (no border)
+        Paint bg = new Paint(Paint.ANTI_ALIAS_FLAG);
+        bg.setStyle(Paint.Style.FILL);
+        bg.setColor(Color.rgb(0, 106, 78));  // freeway green
+        canvas.drawRect(0f, 0f, w, h, bg);
 
-        // FREEWAY SIGN GREEN — #006A4E (RGB 0,106,78)
-        Paint bgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        bgPaint.setColor(Color.rgb(0, 106, 78));  // deep green freeway color
+        // Orientation (large, centered)
+        Paint ori = new Paint(Paint.ANTI_ALIAS_FLAG);
+        ori.setColor(Color.WHITE);
+        ori.setTextSize(300f);               // big indicator
+        ori.setTextAlign(Paint.Align.CENTER);
+        ori.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
 
-        // ⬇️ FIX: extend the bottom to reduce black space
-        // Old: bottom = 420f (too high → black strip)
-        // New: bottom = 472f (near bottom of 512px bitmap)
-        canvas.drawRoundRect(40f, 40f, 984f, 472f, 30f, 30f, bgPaint);
+        Paint.FontMetrics fm = ori.getFontMetrics();
+        float cx = w / 2f;
+        float cy = (h / 2f) - ((fm.ascent + fm.descent) / 2f);
 
-        // --- Title ---
-        Paint titlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        titlePaint.setColor(Color.WHITE);
-        titlePaint.setTextSize(72f);
-        titlePaint.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
-        titlePaint.setTextAlign(Paint.Align.CENTER);
-
-        float centerX = bmp.getWidth() / 2f;
-        float titleY  = 120f;
-
-        canvas.drawText("Current Direction Info", centerX, titleY, titlePaint);
-
-        // --- Body text ---
-        Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        textPaint.setColor(Color.WHITE);
-        textPaint.setTextSize(64f);
-        textPaint.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
-        textPaint.setTextAlign(Paint.Align.LEFT);
-
-        float leftTextX   = 80f;
-        float baseY       = 230f;
-        float lineSpacing = 72f;
-
-        canvas.drawText(
-                "ORIENTATION: " + orientationLabel.toUpperCase(),
-                leftTextX,
-                baseY,
-                textPaint
-        );
-
-        canvas.drawText(
-                "DISTANCE: " + distanceMeters + "m",
-                leftTextX,
-                baseY + lineSpacing,
-                textPaint
-        );
+        canvas.drawText(shortOrientation, cx, cy, ori);
 
         return bmp;
     }
@@ -236,19 +195,11 @@ public class DirectionTabletRenderer {
         GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
     }
 
-    /**
-     * Draws the tablet panel near the given anchor.
-     * Make sure updateFromValues(...) has been called at least once.
-     */
     public void draw(float[] viewMatrix, float[] projMatrix, float[] anchorMatrix) {
-        if (textureId == 0) {
-            // No texture yet; nothing to draw
-            return;
-        }
+        if (textureId == 0) return;
 
         GLES20.glUseProgram(program);
 
-        // Local model matrix: position + rotation + scale
         Matrix.setIdentityM(modelMatrix, 0);
         Matrix.translateM(modelMatrix, 0, posX, posY, posZ);
         Matrix.rotateM(modelMatrix, 0, rotX, 1f, 0f, 0f);
@@ -256,11 +207,8 @@ public class DirectionTabletRenderer {
         Matrix.rotateM(modelMatrix, 0, rotZ, 0f, 0f, 1f);
         Matrix.scaleM(modelMatrix, 0, scale, scale, scale);
 
-        // anchor * model
         Matrix.multiplyMM(tempMatrix, 0, anchorMatrix, 0, modelMatrix, 0);
-        // view * (anchor*model)
         Matrix.multiplyMM(finalMvp, 0, viewMatrix, 0, tempMatrix, 0);
-        // proj * ...
         Matrix.multiplyMM(finalMvp, 0, projMatrix, 0, finalMvp, 0);
 
         positionHandle  = GLES20.glGetAttribLocation(program, "aPosition");
@@ -268,7 +216,10 @@ public class DirectionTabletRenderer {
         mvpMatrixHandle = GLES20.glGetUniformLocation(program, "uMVPMatrix");
         samplerHandle   = GLES20.glGetUniformLocation(program, "uTexture");
 
+        GLES20.glUniformMatrix4fv(mvpMatrixHandle, 1, false, finalMvp, 0);
+
         GLES20.glEnableVertexAttribArray(positionHandle);
+        vertexBuffer.position(0);
         GLES20.glVertexAttribPointer(
                 positionHandle,
                 COORDS_PER_VERTEX,
@@ -279,6 +230,7 @@ public class DirectionTabletRenderer {
         );
 
         GLES20.glEnableVertexAttribArray(texCoordHandle);
+        texBuffer.position(0);
         GLES20.glVertexAttribPointer(
                 texCoordHandle,
                 TEX_PER_VERTEX,
@@ -287,8 +239,6 @@ public class DirectionTabletRenderer {
                 TEX_PER_VERTEX * BYTES_PER_FLOAT,
                 texBuffer
         );
-
-        GLES20.glUniformMatrix4fv(mvpMatrixHandle, 1, false, finalMvp, 0);
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId);
