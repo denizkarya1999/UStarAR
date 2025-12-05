@@ -145,6 +145,38 @@ public class ArrowRenderer {
             -0.20f, 0.30f,  0.05f,
     };
 
+    // ---- Extra: white edge lines for 3D look ----
+    private FloatBuffer edgeVertexBuffer;
+    private FloatBuffer edgeColorBuffer;
+
+    // Pairs of vertices to draw edges as GL_LINES (front shaft + head outline)
+    private static final float[] ARROW_EDGE_COORDS = {
+
+            // ===== SHAFT FRONT EDGES =====
+            // Bottom edge of shaft
+            -0.10f, 0.00f, 0.051f,   0.10f, 0.00f, 0.051f,
+
+            // Right vertical edge
+            0.10f,  0.00f, 0.051f,   0.10f, 0.30f, 0.051f,
+
+            // Left vertical edge
+            -0.10f, 0.00f, 0.051f,  -0.10f, 0.30f, 0.051f,
+
+
+            // ===== ARROW HEAD EDGES =====
+            // Left bottom wing (from outside to shaft edge)
+            -0.20f, 0.30f, 0.051f,  -0.10f, 0.30f, 0.051f,
+
+            // Right bottom wing (from shaft edge to outside)
+            0.10f, 0.30f, 0.051f,    0.20f, 0.30f, 0.051f,
+
+            // Left slanted edge to apex
+            -0.20f, 0.30f, 0.051f,   0.0f,  0.55f, 0.0f,
+
+            // Right slanted edge to apex
+            0.20f,  0.30f, 0.051f,   0.0f,  0.55f, 0.0f
+    };
+
     // Small quad centered at origin for the label; we will place it on the arrow front
     private static final float[] LABEL_QUAD_COORDS = {
             -0.5f, -0.25f, 0f,
@@ -214,7 +246,7 @@ public class ArrowRenderer {
     }
 
     public void createOnGlThread() {
-        // ---- Arrow buffers ----
+        // ---- Arrow fill buffers ----
         ByteBuffer vb = ByteBuffer.allocateDirect(ARROW_COORDS.length * BYTES_PER_FLOAT);
         vb.order(ByteOrder.nativeOrder());
         vertexBuffer = vb.asFloatBuffer();
@@ -224,7 +256,24 @@ public class ArrowRenderer {
         ByteBuffer cb = ByteBuffer.allocateDirect(vertexCount * COLOR_COMPONENTS * BYTES_PER_FLOAT);
         cb.order(ByteOrder.nativeOrder());
         colorBuffer = cb.asFloatBuffer();
-        setColor(1f, 0f, 0f, 1f); // bright red
+
+        // Fake 3D shading: different reds per face
+        applyShadedRed();
+
+        // ---- Edge line buffers (white outline) ----
+        ByteBuffer evb = ByteBuffer.allocateDirect(ARROW_EDGE_COORDS.length * BYTES_PER_FLOAT);
+        evb.order(ByteOrder.nativeOrder());
+        edgeVertexBuffer = evb.asFloatBuffer();
+        edgeVertexBuffer.put(ARROW_EDGE_COORDS).position(0);
+
+        int edgeVertexCount = ARROW_EDGE_COORDS.length / COORDS_PER_VERTEX;
+        ByteBuffer ecb = ByteBuffer.allocateDirect(edgeVertexCount * COLOR_COMPONENTS * BYTES_PER_FLOAT);
+        ecb.order(ByteOrder.nativeOrder());
+        edgeColorBuffer = ecb.asFloatBuffer();
+        for (int i = 0; i < edgeVertexCount; i++) {
+            edgeColorBuffer.put(1f).put(1f).put(1f).put(1f); // pure white edges
+        }
+        edgeColorBuffer.position(0);
 
         // ---- Label quad buffers ----
         ByteBuffer lvb = ByteBuffer.allocateDirect(LABEL_QUAD_COORDS.length * BYTES_PER_FLOAT);
@@ -288,6 +337,66 @@ public class ArrowRenderer {
         colorBuffer.position(0);
     }
 
+    /** Give the arrow a fake 3D shaded look: front bright, sides medium, back/bottom dark. */
+    private void applyShadedRed() {
+        colorBuffer.position(0);
+
+        int vertexCount = ARROW_COORDS.length / COORDS_PER_VERTEX;
+
+        // Sanity: we know the arrow is organized by faces:
+        //  - 0..5   : shaft front (2 tris)
+        //  - 6..11  : shaft back
+        //  - 12..17 : shaft left
+        //  - 18..23 : shaft right
+        //  - 24..29 : shaft top
+        //  - 30..35 : shaft bottom
+        //  - 36..38 : head front
+        //  - 39..41 : head right
+        //  - 42..44 : head back
+        //  - 45..47 : head left
+
+        for (int i = 0; i < vertexCount; i++) {
+            float r, g, b, a;
+            a = 1f;
+
+            if (i <= 5) {
+                // Shaft FRONT – brightest
+                r = 1.0f; g = 0.15f; b = 0.15f;
+            } else if (i <= 11) {
+                // Shaft BACK – darkest
+                r = 0.4f; g = 0.0f;  b = 0.0f;
+            } else if (i <= 17) {
+                // Shaft LEFT – medium
+                r = 0.8f; g = 0.05f; b = 0.05f;
+            } else if (i <= 23) {
+                // Shaft RIGHT – medium
+                r = 0.8f; g = 0.05f; b = 0.05f;
+            } else if (i <= 29) {
+                // Shaft TOP – a bit brighter
+                r = 1.0f; g = 0.25f; b = 0.25f;
+            } else if (i <= 35) {
+                // Shaft BOTTOM – darker
+                r = 0.5f; g = 0.0f;  b = 0.0f;
+            } else if (i <= 38) {
+                // Head FRONT – bright
+                r = 1.0f; g = 0.2f;  b = 0.2f;
+            } else if (i <= 41) {
+                // Head RIGHT – medium
+                r = 0.85f; g = 0.1f; b = 0.1f;
+            } else if (i <= 44) {
+                // Head BACK – darker
+                r = 0.5f; g = 0.0f;  b = 0.0f;
+            } else {
+                // Head LEFT – medium
+                r = 0.85f; g = 0.1f; b = 0.1f;
+            }
+
+            colorBuffer.put(r).put(g).put(b).put(a);
+        }
+
+        colorBuffer.position(0);
+    }
+
     /** Build / rebuild the distance label texture: "1M", "2M", ... */
     private void updateLabelTexture() {
         // 512 x 256 bitmap with centered "<distance>M"
@@ -339,7 +448,7 @@ public class ArrowRenderer {
     }
 
     public void draw(float[] viewMatrix, float[] projMatrix, float[] anchorMatrix) {
-        // ---------- 1) DRAW RED ARROW BODY ----------
+        // ---------- 1) DRAW RED ARROW BODY (SHADED) ----------
         GLES20.glUseProgram(arrowProgram);
 
         // Build local model matrix (pos, rot, scale)
@@ -353,7 +462,7 @@ public class ArrowRenderer {
         // Arrow in world space: anchor * model
         Matrix.multiplyMM(tempMatrix, 0, anchorMatrix, 0, modelMatrix, 0);
 
-        // MVP for arrow body (normal viewMatrix → arrow rotates with camera)
+        // MVP for arrow body
         Matrix.multiplyMM(finalMvp, 0, viewMatrix, 0, tempMatrix, 0);
         Matrix.multiplyMM(finalMvp, 0, projMatrix, 0, finalMvp, 0);
 
@@ -364,6 +473,9 @@ public class ArrowRenderer {
         GLES20.glUniformMatrix4fv(arrowMvpHandle, 1, false, finalMvp, 0);
 
         GLES20.glEnableVertexAttribArray(arrowPosHandle);
+        GLES20.glEnableVertexAttribArray(arrowColorHandle);
+
+        // ---- Fill (shaded red body) ----
         vertexBuffer.position(0);
         GLES20.glVertexAttribPointer(
                 arrowPosHandle,
@@ -374,7 +486,6 @@ public class ArrowRenderer {
                 vertexBuffer
         );
 
-        GLES20.glEnableVertexAttribArray(arrowColorHandle);
         colorBuffer.position(0);
         GLES20.glVertexAttribPointer(
                 arrowColorHandle,
@@ -446,6 +557,8 @@ public class ArrowRenderer {
         GLES20.glUniformMatrix4fv(labelMvpHandle, 1, false, finalMvp, 0);
 
         GLES20.glEnableVertexAttribArray(labelPosHandle);
+        GLES20.glEnableVertexAttribArray(labelTexCoordHandle);
+
         labelVertexBuffer.position(0);
         GLES20.glVertexAttribPointer(
                 labelPosHandle,
@@ -456,7 +569,6 @@ public class ArrowRenderer {
                 labelVertexBuffer
         );
 
-        GLES20.glEnableVertexAttribArray(labelTexCoordHandle);
         labelTexBuffer.position(0);
         GLES20.glVertexAttribPointer(
                 labelTexCoordHandle,

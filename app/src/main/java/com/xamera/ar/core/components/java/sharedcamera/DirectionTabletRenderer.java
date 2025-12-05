@@ -84,6 +84,89 @@ public class DirectionTabletRenderer {
                     "  gl_FragColor = texture2D(uTexture, vTexCoord);" +
                     "}";
 
+    // --- 3D thickness for the tablet (depth in Z) ---
+    // 3D thickness (local Z depth)
+    private float thickness3D = 0.10f;  // default
+
+    // Solid 3D fill for the “slab” (back + sides)
+    private FloatBuffer solidVertexBuffer;
+    private int solidProgram;
+    private int solidPosHandle;
+    private int solidMvpHandle;
+    private int solidColorHandle;
+
+    private static final String SOLID_VERTEX_SHADER =
+            "uniform mat4 uMVPMatrix;" +
+                    "attribute vec4 aPosition;" +
+                    "void main() {" +
+                    "  gl_Position = uMVPMatrix * aPosition;" +
+                    "}";
+
+    private static final String SOLID_FRAGMENT_SHADER =
+            "precision mediump float;" +
+                    "uniform vec4 uColor;" +
+                    "void main() {" +
+                    "  gl_FragColor = uColor;" +
+                    "}";
+
+    /** Set tablet thickness in local Z (front-to-back). */
+    public void setThickness3D(float t) {
+        thickness3D = t;
+        rebuildSolidGeometry();  // rebuild the filled slab with new depth
+    }
+
+    /** Build filled 3D geometry (back + 4 sides) using current thickness3D. */
+    private void rebuildSolidGeometry() {
+        float d = thickness3D;
+
+        // Front rectangle in local space (z = 0)
+        float fx0 = -0.5f, fy0 = -0.3f;
+        float fx1 =  0.5f, fy1 =  0.3f;
+
+        float fz  = 0f;
+        float bz  = -d;   // back face z
+
+        // Corners:
+        // Front: A(-0.5,-0.3,0), B(0.5,-0.3,0), C(0.5,0.3,0), D(-0.5,0.3,0)
+        // Back:  A'(-0.5,-0.3,-d), B'(0.5,-0.3,-d), C'(0.5,0.3,-d), D'(-0.5,0.3,-d)
+        float Ax = fx0, Ay = fy0, Az = fz;
+        float Bx = fx1, By = fy0, Bz = fz;
+        float Cx = fx1, Cy = fy1, Cz = fz;
+        float Dx = fx0, Dy = fy1, Dz = fz;
+
+        float Apx = fx0, Apy = fy0, Apz = bz;
+        float Bpx = fx1, Bpy = fy0, Bpz = bz;
+        float Cpx = fx1, Cpy = fy1, Cpz = bz;
+        float Dpx = fx0, Dpy = fy1, Dpz = bz;
+
+        float[] solidCoords = {
+                // ---- BACK FACE (A',B',C',D') ----
+                Apx, Apy, Apz,  Bpx, Bpy, Bpz,  Cpx, Cpy, Cpz,
+                Apx, Apy, Apz,  Cpx, Cpy, Cpz,  Dpx, Dpy, Dpz,
+
+                // ---- BOTTOM FACE (A,B,B',A') ----
+                Ax,  Ay,  Az,   Bx,  By,  Bz,   Bpx, Bpy, Bpz,
+                Ax,  Ay,  Az,   Bpx, Bpy, Bpz,  Apx, Apy, Apz,
+
+                // ---- TOP FACE (D,C,C',D') ----
+                Dx,  Dy,  Dz,   Cx,  Cy,  Cz,   Cpx, Cpy, Cpz,
+                Dx,  Dy,  Dz,   Cpx, Cpy, Cpz,  Dpx, Dpy, Dpz,
+
+                // ---- LEFT FACE (A,D,D',A') ----
+                Ax,  Ay,  Az,   Dx,  Dy,  Dz,   Dpx, Dpy, Dpz,
+                Ax,  Ay,  Az,   Dpx, Dpy, Dpz,  Apx, Apy, Apz,
+
+                // ---- RIGHT FACE (B,C,C',B') ----
+                Bx,  By,  Bz,   Cx,  Cy,  Cz,   Cpx, Cpy, Cpz,
+                Bx,  By,  Bz,   Cpx, Cpy, Cpz,  Bpx, Bpy, Bpz
+        };
+
+        ByteBuffer sb = ByteBuffer.allocateDirect(solidCoords.length * BYTES_PER_FLOAT);
+        sb.order(ByteOrder.nativeOrder());
+        solidVertexBuffer = sb.asFloatBuffer();
+        solidVertexBuffer.put(solidCoords).position(0);
+    }
+
     public DirectionTabletRenderer() {
         Matrix.setIdentityM(modelMatrix, 0);
     }
@@ -106,7 +189,7 @@ public class DirectionTabletRenderer {
     }
 
     public void createOnGlThread() {
-        // Vertex buffer
+        // Vertex buffer (front textured quad)
         ByteBuffer vb = ByteBuffer.allocateDirect(QUAD_COORDS.length * BYTES_PER_FLOAT);
         vb.order(ByteOrder.nativeOrder());
         vertexBuffer = vb.asFloatBuffer();
@@ -118,13 +201,24 @@ public class DirectionTabletRenderer {
         texBuffer = tb.asFloatBuffer();
         texBuffer.put(QUAD_TEX).position(0);
 
-        // Compile shaders
+        // Compile shaders for textured front panel
         int vs = loadShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER);
         int fs = loadShader(GLES20.GL_FRAGMENT_SHADER, FRAGMENT_SHADER);
         program = GLES20.glCreateProgram();
         GLES20.glAttachShader(program, vs);
         GLES20.glAttachShader(program, fs);
         GLES20.glLinkProgram(program);
+
+        // Compile shaders for solid 3D fill (back + sides)
+        int svs = loadShader(GLES20.GL_VERTEX_SHADER, SOLID_VERTEX_SHADER);
+        int sfs = loadShader(GLES20.GL_FRAGMENT_SHADER, SOLID_FRAGMENT_SHADER);
+        solidProgram = GLES20.glCreateProgram();
+        GLES20.glAttachShader(solidProgram, svs);
+        GLES20.glAttachShader(solidProgram, sfs);
+        GLES20.glLinkProgram(solidProgram);
+
+        // Build initial 3D geometry
+        rebuildSolidGeometry();
     }
 
     private int loadShader(int type, String code) {
@@ -198,27 +292,55 @@ public class DirectionTabletRenderer {
     public void draw(float[] viewMatrix, float[] projMatrix, float[] anchorMatrix) {
         if (textureId == 0) return;
 
-        GLES20.glUseProgram(program);
-
-        // 1) Local model matrix: position + scale ONLY (no rotation)
+        // ===== Common model/world/MVP =====
+        // Local model matrix: position + scale ONLY (no rotation)
         Matrix.setIdentityM(modelMatrix, 0);
         Matrix.translateM(modelMatrix, 0, posX, posY, posZ);
-
-        // REMOVE all rotations so the tablet does not spin at all
-        // Matrix.rotateM(modelMatrix, 0, rotX, 1f, 0f, 0f);
-        // Matrix.rotateM(modelMatrix, 0, rotY, 0f, 1f, 0f);
-        // Matrix.rotateM(modelMatrix, 0, rotZ, 0f, 0f, 1f);
-
         Matrix.scaleM(modelMatrix, 0, scale, scale, scale);
 
-        // 2) World matrix = anchor * model (tablet locked to anchor pose)
+        // World matrix = anchor * model
         Matrix.multiplyMM(tempMatrix, 0, anchorMatrix, 0, modelMatrix, 0);
 
-        // 3) Standard MVP = P * V * M  (use REAL viewMatrix, no hacks)
+        // Standard MVP = P * V * M
         Matrix.multiplyMM(finalMvp, 0, viewMatrix, 0, tempMatrix, 0);
         Matrix.multiplyMM(finalMvp, 0, projMatrix, 0, finalMvp, 0);
 
-        // 4) Bind attributes & uniforms
+
+        // ---------- 1) DRAW FILLED 3D SLAB (BACK + SIDES) ----------
+        if (solidVertexBuffer != null) {
+            GLES20.glUseProgram(solidProgram);
+
+            solidPosHandle   = GLES20.glGetAttribLocation(solidProgram, "aPosition");
+            solidMvpHandle   = GLES20.glGetUniformLocation(solidProgram, "uMVPMatrix");
+            solidColorHandle = GLES20.glGetUniformLocation(solidProgram, "uColor");
+
+            GLES20.glUniformMatrix4fv(solidMvpHandle, 1, false, finalMvp, 0);
+
+            // slightly darker green for the “thick” part
+            GLES20.glUniform4f(solidColorHandle,
+                    0f, 0.35f, 0.25f, 1f); // tweak as you like
+
+            GLES20.glEnableVertexAttribArray(solidPosHandle);
+            solidVertexBuffer.position(0);
+            GLES20.glVertexAttribPointer(
+                    solidPosHandle,
+                    COORDS_PER_VERTEX,
+                    GLES20.GL_FLOAT,
+                    false,
+                    COORDS_PER_VERTEX * BYTES_PER_FLOAT,
+                    solidVertexBuffer
+            );
+
+            int solidVertexCount = solidVertexBuffer.limit() / COORDS_PER_VERTEX;
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, solidVertexCount);
+
+            GLES20.glDisableVertexAttribArray(solidPosHandle);
+        }
+
+
+        // ---------- 2) DRAW FRONT TEXTURED PANEL (SW, etc.) ----------
+        GLES20.glUseProgram(program);
+
         positionHandle  = GLES20.glGetAttribLocation(program, "aPosition");
         texCoordHandle  = GLES20.glGetAttribLocation(program, "aTexCoord");
         mvpMatrixHandle = GLES20.glGetUniformLocation(program, "uMVPMatrix");
