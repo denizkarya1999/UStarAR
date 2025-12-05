@@ -715,23 +715,23 @@ public class SharedCameraActivity extends AppCompatActivity
 
         // ----- TABLET: SW position adjustable (forward + side) -----
         if (tabletRenderer != null) {
-
           // --- Adjustable offsets ---
           float swForward = 0.35f;   // + ileri, - geri (arrow direction)
-          float swSide    = -0.35f;   // + sağ,  - sol  (right vector)
+          float swSide    = -0.35f;  // + sağ,  - sol  (right vector)
 
-          // 1) Angle → radians
-          float yawRad = (float) Math.toRadians(currentOrientationAngleDeg);
+          // Use a FIXED yaw angle (the one that looked good = SW)
+          float fixedYawDeg = 225f;  // SW on a compass
+          float yawRad      = (float) Math.toRadians(fixedYawDeg);
 
-          // 2) Forward direction of the arrow
+          // 2) Forward direction for this fixed orientation
           float forwardX = (float) Math.sin(yawRad);
           float forwardZ = (float) Math.cos(yawRad);
 
-          // 3) Right direction (perpendicular to arrow)
+          // 3) Right direction (perpendicular to that forward)
           float rightX = forwardZ;
           float rightZ = -forwardX;
 
-          // 4) Compute final world position for SW
+          // 4) Compute final world position for the tablet
           float tabletX =
                   baseX + forwardX * swForward + rightX * swSide;
 
@@ -746,7 +746,6 @@ public class SharedCameraActivity extends AppCompatActivity
           Matrix.setIdentityM(tabletMatrix, 0);
           Matrix.translateM(tabletMatrix, 0, tabletX, tabletY, tabletZ);
 
-          // No rotation → SW never rotates
           tabletRenderer.draw(viewmtx, projmtx, tabletMatrix);
         }
 
