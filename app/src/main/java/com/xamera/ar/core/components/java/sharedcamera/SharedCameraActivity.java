@@ -43,9 +43,12 @@ import com.google.ar.core.ArCoreApk;
 import com.google.ar.core.Camera;
 import com.google.ar.core.Config;
 import com.google.ar.core.Frame;
+import com.google.ar.core.HitResult;
+import com.google.ar.core.Plane;
 import com.google.ar.core.Pose;
 import com.google.ar.core.Session;
 import com.google.ar.core.SharedCamera;
+import com.google.ar.core.Trackable;
 import com.google.ar.core.TrackingState;
 import com.google.ar.core.examples.java.sharedcamera.R;
 import com.google.ar.core.exceptions.CameraNotAvailableException;
@@ -79,6 +82,10 @@ public class SharedCameraActivity extends AppCompatActivity
   // Anchor state
   private boolean hasPlacedAnchor = false;
   private Pose fixedAnchorPose = null;
+
+  //Viewport variables
+  private int viewportWidth = 0;
+  private int viewportHeight = 0;
 
   // AR runs automatically.
   private boolean arMode = true;
@@ -552,9 +559,15 @@ public class SharedCameraActivity extends AppCompatActivity
   public void onSurfaceChanged(GL10 gl, int width, int height) {
     GLES20.glViewport(0, 0, width, height);
     displayRotationHelper.onSurfaceChanged(width, height);
+
+    viewportWidth = width;
+    viewportHeight = height;
+
     runOnUiThread(() ->
-            imageTextLinearLayout.setOrientation(width > height ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL));
+            imageTextLinearLayout.setOrientation(
+                    width > height ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL));
   }
+
 
   @Override
   public void onDrawFrame(GL10 gl) {
@@ -641,32 +654,41 @@ public class SharedCameraActivity extends AppCompatActivity
     camera.getProjectionMatrix(projmtx, 0, 0.1f, 100.0f);
     camera.getViewMatrix(viewmtx, 0);
 
-    // For optional facing-the-camera behavior (tablet billboard)
-    float[] invView = new float[16];
-    Matrix.invertM(invView, 0, viewmtx, 0);
-    float camX = invView[12];
-    float camY = invView[13];
-    float camZ = invView[14];
+    // ---- 4) PLACE THE ANCHOR ONLY ONCE ON A REAL PLANE ----
+    if (!hasPlacedAnchor
+            && camera.getTrackingState() == TrackingState.TRACKING
+            && viewportWidth > 0 && viewportHeight > 0) {
 
-    // ---- 4) PLACE THE ANCHOR ONLY ONCE, THEN NEVER MOVE IT ----
-    if (!hasPlacedAnchor && camera.getTrackingState() == TrackingState.TRACKING) {
-      float depthMeters = 1.5f; // distance in front of camera at creation
-      Pose cameraPose   = camera.getPose();
+      float cx = viewportWidth  / 2.0f;
+      float cy = viewportHeight / 2.0f;
 
-      // +Z is forward in ARCore camera space; (0,0,-depth) in camera space
-      Pose worldPose = cameraPose.compose(Pose.makeTranslation(0f, 0f, -depthMeters));
+      for (HitResult hit : frame.hitTest(cx, cy)) {
+        Trackable trackable = hit.getTrackable();
 
-      // Store this pose permanently so the object "sticks" here
-      fixedAnchorPose = worldPose;
+        if (trackable instanceof Plane) {
+          Plane plane = (Plane) trackable;
 
-      anchors.clear(); // ensure only one anchor
-      anchors.add(new ColoredAnchor(
-              sharedSession.createAnchor(worldPose),
-              new float[]{255f, 255f, 255f, 255f}
-      ));
+          if (plane.isPoseInPolygon(hit.getHitPose()) &&
+                  plane.getSubsumedBy() == null) {
 
-      hasPlacedAnchor = true; // never place again
+            Anchor anchor = hit.createAnchor();
+
+            // Save the exact pose permanently
+            fixedAnchorPose = anchor.getPose();
+
+            anchors.clear();
+            anchors.add(new ColoredAnchor(
+                    anchor,
+                    new float[]{1f, 1f, 1f, 1f}
+            ));
+
+            hasPlacedAnchor = true;
+            break;
+          }
+        }
+      }
     }
+
 
     // ---- 5) Render tablet + arrow at the FIXED anchor pose ----
     if (!anchors.isEmpty() && fixedAnchorPose != null) {
@@ -691,18 +713,40 @@ public class SharedCameraActivity extends AppCompatActivity
         float baseY = anchorY + 0.20f;
         float baseZ = anchorZ;
 
-        // ----- TABLET: further above arrow, facing the camera (orientation only) -----
+        // ----- TABLET: SW position adjustable (forward + side) -----
         if (tabletRenderer != null) {
+
+          // --- Adjustable offsets ---
+          float swForward = 0.35f;   // + ileri, - geri (arrow direction)
+          float swSide    = -0.35f;   // + sağ,  - sol  (right vector)
+
+          // 1) Angle → radians
+          float yawRad = (float) Math.toRadians(currentOrientationAngleDeg);
+
+          // 2) Forward direction of the arrow
+          float forwardX = (float) Math.sin(yawRad);
+          float forwardZ = (float) Math.cos(yawRad);
+
+          // 3) Right direction (perpendicular to arrow)
+          float rightX = forwardZ;
+          float rightZ = -forwardX;
+
+          // 4) Compute final world position for SW
+          float tabletX =
+                  baseX + forwardX * swForward + rightX * swSide;
+
+          float tabletY =
+                  baseY + 0.24f;   // same height
+
+          float tabletZ =
+                  baseZ + forwardZ * swForward + rightZ * swSide;
+
+          // 5) Apply transform
           float[] tabletMatrix = new float[16];
-
-          float dxCam = camX - baseX;
-          float dzCam = camZ - baseZ;
-          float yawToCam = (float) Math.toDegrees(Math.atan2(dxCam, dzCam));
-
           Matrix.setIdentityM(tabletMatrix, 0);
-          Matrix.translateM(tabletMatrix, 0, baseX, baseY + 0.24f, baseZ);
-          Matrix.rotateM(tabletMatrix, 0, yawToCam, 0f, 1f, 0f);
+          Matrix.translateM(tabletMatrix, 0, tabletX, tabletY, tabletZ);
 
+          // No rotation → SW never rotates
           tabletRenderer.draw(viewmtx, projmtx, tabletMatrix);
         }
 

@@ -345,13 +345,15 @@ public class ArrowRenderer {
         // Build local model matrix (pos, rot, scale)
         Matrix.setIdentityM(modelMatrix, 0);
         Matrix.translateM(modelMatrix, 0, posX, posY, posZ);
-        Matrix.rotateM(modelMatrix, 0, rotX, 1, 0, 0);
-        Matrix.rotateM(modelMatrix, 0, rotY, 0, 1, 0);
-        Matrix.rotateM(modelMatrix, 0, rotZ, 0, 0, 1);
+        Matrix.rotateM(modelMatrix, 0, rotX, 1f, 0f, 0f);
+        Matrix.rotateM(modelMatrix, 0, rotY, 0f, 1f, 0f);
+        Matrix.rotateM(modelMatrix, 0, rotZ, 0f, 0f, 1f);
         Matrix.scaleM(modelMatrix, 0, scale, scale, scale);
 
-        // anchor → model → view → projection
+        // Arrow in world space: anchor * model
         Matrix.multiplyMM(tempMatrix, 0, anchorMatrix, 0, modelMatrix, 0);
+
+        // MVP for arrow body (normal viewMatrix → arrow rotates with camera)
         Matrix.multiplyMM(finalMvp, 0, viewMatrix, 0, tempMatrix, 0);
         Matrix.multiplyMM(finalMvp, 0, projMatrix, 0, finalMvp, 0);
 
@@ -389,44 +391,51 @@ public class ArrowRenderer {
         GLES20.glDisableVertexAttribArray(arrowPosHandle);
         GLES20.glDisableVertexAttribArray(arrowColorHandle);
 
-        // ---------- 2) DRAW DISTANCE LABEL TEXTURED QUAD ----------
+
+        // ---------- 2) DRAW DISTANCE LABEL TEXTURED QUAD (EMBEDDED "2M") ----------
         if (labelTextureId == 0) {
             return; // nothing to draw yet
         }
 
         GLES20.glUseProgram(labelProgram);
 
-        // Rebuild model matrix for label (follow arrow, then offset, THEN shrink)
+        // Rebuild arrow model matrix (same as above)
         Matrix.setIdentityM(modelMatrix, 0);
         Matrix.translateM(modelMatrix, 0, posX, posY, posZ);
-        Matrix.rotateM(modelMatrix, 0, rotX, 1, 0, 0);
-        Matrix.rotateM(modelMatrix, 0, rotY, 0, 1, 0);
-        Matrix.rotateM(modelMatrix, 0, rotZ, 0, 0, 1);
+        Matrix.rotateM(modelMatrix, 0, rotX, 1f, 0f, 0f);
+        Matrix.rotateM(modelMatrix, 0, rotY, 0f, 1f, 0f);
+        Matrix.rotateM(modelMatrix, 0, rotZ, 0f, 0f, 1f);
+        Matrix.scaleM(modelMatrix, 0, scale, scale, scale);
 
-        // 1) offset in arrow space (so it's in front of the body)
-        Matrix.translateM(modelMatrix, 0,
-                0f,        // X: center
-                0.11f,     // Y: in the chest area
-                0.06f      // Z: slightly in front of the front face
+        // Arrow in world space again
+        float[] arrowWorld = new float[16];
+        Matrix.multiplyMM(arrowWorld, 0, anchorMatrix, 0, modelMatrix, 0);
+
+        // Local transform that glues the label onto the shaft front face.
+        // Shaft front ≈ z = +0.05, y in [0.00, 0.30], so center is y ≈ 0.15.
+        float[] labelLocal = new float[16];
+        Matrix.setIdentityM(labelLocal, 0);
+
+        // Place label in the middle of the chest, just on the front surface.
+        Matrix.translateM(labelLocal, 0,
+                0f,     // center in X
+                0.15f,  // mid of shaft height
+                0.051f  // just in front of front face (0.05) to avoid z-fighting
         );
 
-        // 2) now shrink the label relative to arrow size
-        Matrix.scaleM(modelMatrix, 0,
-                scale * LABEL_SCALE,
-                scale * LABEL_SCALE,
-                scale * LABEL_SCALE
+        // Scale quad so it covers a nice rectangle on the shaft.
+        Matrix.scaleM(labelLocal, 0,
+                0.18f,  // label width on arrow
+                0.15f,  // label height
+                1f
         );
 
+        // Label in world space: arrowWorld * labelLocal
+        float[] labelWorld = new float[16];
+        Matrix.multiplyMM(labelWorld, 0, arrowWorld, 0, labelLocal, 0);
 
-        // Offset label slightly upward & outward on arrow front
-        Matrix.translateM(modelMatrix, 0,
-                0f,        // horizontally centered
-                0.10f,     // move slightly up inside chest area
-                0.055f     // very close to arrow front, not floating
-        );
-
-        Matrix.multiplyMM(tempMatrix, 0, anchorMatrix, 0, modelMatrix, 0);
-        Matrix.multiplyMM(finalMvp, 0, viewMatrix, 0, tempMatrix, 0);
+        // Final MVP for label – same viewMatrix, so it rotates with arrow.
+        Matrix.multiplyMM(finalMvp, 0, viewMatrix, 0, labelWorld, 0);
         Matrix.multiplyMM(finalMvp, 0, projMatrix, 0, finalMvp, 0);
 
         labelPosHandle      = GLES20.glGetAttribLocation(labelProgram, "aPosition");
@@ -462,7 +471,11 @@ public class ArrowRenderer {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, labelTextureId);
         GLES20.glUniform1i(labelSamplerHandle, 0);
 
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, LABEL_QUAD_COORDS.length / COORDS_PER_VERTEX);
+        GLES20.glDrawArrays(
+                GLES20.GL_TRIANGLES,
+                0,
+                LABEL_QUAD_COORDS.length / COORDS_PER_VERTEX
+        );
 
         GLES20.glDisableVertexAttribArray(labelPosHandle);
         GLES20.glDisableVertexAttribArray(labelTexCoordHandle);

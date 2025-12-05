@@ -200,17 +200,25 @@ public class DirectionTabletRenderer {
 
         GLES20.glUseProgram(program);
 
+        // 1) Local model matrix: position + scale ONLY (no rotation)
         Matrix.setIdentityM(modelMatrix, 0);
         Matrix.translateM(modelMatrix, 0, posX, posY, posZ);
-        Matrix.rotateM(modelMatrix, 0, rotX, 1f, 0f, 0f);
-        Matrix.rotateM(modelMatrix, 0, rotY, 0f, 1f, 0f);
-        Matrix.rotateM(modelMatrix, 0, rotZ, 0f, 0f, 1f);
+
+        // REMOVE all rotations so the tablet does not spin at all
+        // Matrix.rotateM(modelMatrix, 0, rotX, 1f, 0f, 0f);
+        // Matrix.rotateM(modelMatrix, 0, rotY, 0f, 1f, 0f);
+        // Matrix.rotateM(modelMatrix, 0, rotZ, 0f, 0f, 1f);
+
         Matrix.scaleM(modelMatrix, 0, scale, scale, scale);
 
+        // 2) World matrix = anchor * model (tablet locked to anchor pose)
         Matrix.multiplyMM(tempMatrix, 0, anchorMatrix, 0, modelMatrix, 0);
+
+        // 3) Standard MVP = P * V * M  (use REAL viewMatrix, no hacks)
         Matrix.multiplyMM(finalMvp, 0, viewMatrix, 0, tempMatrix, 0);
         Matrix.multiplyMM(finalMvp, 0, projMatrix, 0, finalMvp, 0);
 
+        // 4) Bind attributes & uniforms
         positionHandle  = GLES20.glGetAttribLocation(program, "aPosition");
         texCoordHandle  = GLES20.glGetAttribLocation(program, "aTexCoord");
         mvpMatrixHandle = GLES20.glGetUniformLocation(program, "uMVPMatrix");
